@@ -7,12 +7,11 @@ import 'renderer/css/modals.css';
 import React, {useEffect, useState} from 'react';
 import ReactDOM from 'react-dom';
 
-import {UniqueServer} from 'types/config';
-
 import IntlProvider from 'renderer/intl_provider';
 
-import NewServerModal from '../../components/NewServerModal';
+import type {UniqueServer} from 'types/config';
 
+import NewServerModal from '../../components/NewServerModal';
 import setupDarkMode from '../darkMode';
 
 setupDarkMode();
@@ -26,12 +25,18 @@ const onSave = (data: UniqueServer) => {
 };
 
 const NewServerModalWrapper: React.FC = () => {
+    const [data, setData] = useState<{prefillURL?: string}>();
     const [unremoveable, setUnremovable] = useState<boolean>();
 
     useEffect(() => {
         window.desktop.modals.isModalUncloseable().then((uncloseable) => {
             setUnremovable(uncloseable);
         });
+
+        window.desktop.modals.getModalInfo<{prefillURL?: string}>().
+            then((data) => {
+                setData(data);
+            });
     }, []);
 
     return (
@@ -40,6 +45,7 @@ const NewServerModalWrapper: React.FC = () => {
                 onClose={unremoveable ? undefined : onClose}
                 onSave={onSave}
                 editMode={false}
+                prefillURL={data?.prefillURL}
                 show={true}
             />
         </IntlProvider>

@@ -3,14 +3,15 @@
 // See LICENSE.txt for license information.
 'use strict';
 
-import {Menu, MenuItem, MenuItemConstructorOptions} from 'electron';
+import type {MenuItem, MenuItemConstructorOptions} from 'electron';
+import {Menu} from 'electron';
 
 import ServerViewState from 'app/serverViewState';
-
 import ServerManager from 'common/servers/serverManager';
-
 import {localizeMessage} from 'main/i18nManager';
-import SettingsWindow from 'main/windows/settingsWindow';
+import {getLocalPreload} from 'main/utils';
+import ModalManager from 'main/views/modalManager';
+import MainWindow from 'main/windows/mainWindow';
 
 export function createTemplate() {
     const servers = ServerManager.getOrderedServers();
@@ -27,7 +28,18 @@ export function createTemplate() {
         }, {
             label: process.platform === 'darwin' ? localizeMessage('main.menus.tray.preferences', 'Preferences...') : localizeMessage('main.menus.tray.settings', 'Settings'),
             click: () => {
-                SettingsWindow.show();
+                const mainWindow = MainWindow.get();
+                if (!mainWindow) {
+                    return;
+                }
+
+                ModalManager.addModal(
+                    'settingsModal',
+                    'mattermost-desktop://renderer/settings.html',
+                    getLocalPreload('internalAPI.js'),
+                    null,
+                    mainWindow,
+                );
             },
         }, {
             type: 'separator',

@@ -1,13 +1,12 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {BrowserView, dialog, ipcMain, IpcMainEvent, IpcMainInvokeEvent, Event} from 'electron';
+import type {IpcMainEvent, IpcMainInvokeEvent} from 'electron';
+import {WebContentsView, ipcMain} from 'electron';
 import isDev from 'electron-is-dev';
 
 import ServerViewState from 'app/serverViewState';
-
 import AppState from 'common/appState';
-import {SECOND, TAB_BAR_HEIGHT} from 'common/utils/constants';
 import {
     UPDATE_TARGET_URL,
     LOAD_SUCCESS,
@@ -19,11 +18,7 @@ import {
     UPDATE_URL_VIEW_WIDTH,
     SERVERS_UPDATE,
     REACT_APP_INITIALIZED,
-    BROWSER_HISTORY_BUTTON,
-    APP_LOGGED_OUT,
-    APP_LOGGED_IN,
     RELOAD_CURRENT_VIEW,
-    UNREAD_RESULT,
     HISTORY,
     GET_VIEW_INFO_FOR_TEST,
     SESSION_EXPIRED,
@@ -32,23 +27,34 @@ import {
     MAIN_WINDOW_FOCUSED,
     SWITCH_TAB,
     GET_IS_DEV_MODE,
+    REQUEST_BROWSER_HISTORY_STATUS,
+    UNREADS_AND_MENTIONS,
+    TAB_LOGIN_CHANGED,
+    DEVELOPER_MODE_UPDATED,
 } from 'common/communication';
 import Config from 'common/config';
 import {Logger} from 'common/log';
-import Utils from 'common/utils/util';
-import {MattermostServer} from 'common/servers/MattermostServer';
+import type {MattermostServer} from 'common/servers/MattermostServer';
 import ServerManager from 'common/servers/serverManager';
-import {MattermostView, TAB_MESSAGING} from 'common/views/View';
+import {SECOND, TAB_BAR_HEIGHT} from 'common/utils/constants';
 import {getFormattedPathName, parseURL} from 'common/utils/url';
-
-import {localizeMessage} from 'main/i18nManager';
+import Utils from 'common/utils/util';
+import type {MattermostView} from 'common/views/View';
+import {TAB_MESSAGING} from 'common/views/View';
+import {handleWelcomeScreenModal} from 'main/app/intercom';
+import {flushCookiesStore} from 'main/app/utils';
+import DeveloperMode from 'main/developerMode';
+import performanceMonitor from 'main/performanceMonitor';
+import PermissionsManager from 'main/permissionsManager';
+import ModalManager from 'main/views/modalManager';
 import MainWindow from 'main/windows/mainWindow';
 
-import {getLocalURLString, getLocalPreload, getAdjustedWindowBoundaries, shouldHaveBackBar} from '../utils';
+import type {DeveloperSettings} from 'types/settings';
 
-import {MattermostBrowserView} from './MattermostBrowserView';
-import modalManager from './modalManager';
 import LoadingScreen from './loadingScreen';
+import {MattermostWebContentsView} from './MattermostWebContentsView';
+
+import {getLocalPreload, getAdjustedWindowBoundaries} from '../utils';
 
 const log = new Logger('ViewManager');
 const URL_VIEW_DURATION = 10 * SECOND;
@@ -56,7 +62,7 @@ const URL_VIEW_HEIGHT = 20;
 
 export class ViewManager {
     private closedViews: Map<string, {srv: MattermostServer; view: MattermostView}>;
-    private views: Map<string, MattermostBrowserView>;
+    private views: Map<string, MattermostWebContentsView>;
     private currentView?: string;
 
     private urlViewCancel?: () => void;
@@ -70,45 +76,58 @@ export class ViewManager {
         MainWindow.on(MAIN_WINDOW_FOCUSED, this.focusCurrentView);
         ipcMain.handle(GET_VIEW_INFO_FOR_TEST, this.handleGetViewInfoForTest);
         ipcMain.handle(GET_IS_DEV_MODE, () => isDev);
+        ipcMain.handle(REQUEST_BROWSER_HISTORY_STATUS, this.handleRequestBrowserHistoryStatus);
         ipcMain.on(HISTORY, this.handleHistory);
         ipcMain.on(REACT_APP_INITIALIZED, this.handleReactAppInitialized);
         ipcMain.on(BROWSER_HISTORY_PUSH, this.handleBrowserHistoryPush);
-        ipcMain.on(BROWSER_HISTORY_BUTTON, this.handleBrowserHistoryButton);
-        ipcMain.on(APP_LOGGED_IN, this.handleAppLoggedIn);
-        ipcMain.on(APP_LOGGED_OUT, this.handleAppLoggedOut);
+        ipcMain.on(TAB_LOGIN_CHANGED, this.handleTabLoginChanged);
         ipcMain.on(RELOAD_CURRENT_VIEW, this.handleReloadCurrentView);
-        ipcMain.on(UNREAD_RESULT, this.handleFaviconIsUnread);
+        ipcMain.on(UNREADS_AND_MENTIONS, this.handleUnreadsAndMentionsChanged);
         ipcMain.on(SESSION_EXPIRED, this.handleSessionExpired);
 
         ipcMain.on(SWITCH_TAB, (event, viewId) => this.showById(viewId));
 
         ServerManager.on(SERVERS_UPDATE, this.handleReloadConfiguration);
+        DeveloperMode.on(DEVELOPER_MODE_UPDATED, this.handleDeveloperModeUpdated);
     }
 
     private init = () => {
-        LoadingScreen.show();
-        ServerManager.getAllServers().forEach((server) => this.loadServer(server));
-        this.showInitial();
-    }
+        if (ServerManager.hasServers()) {
+            LoadingScreen.show();
+            ServerManager.getAllServers().forEach((server) => this.loadServer(server));
+            this.showInitial();
+        }
+    };
+
+    private handleDeveloperModeUpdated = (json: DeveloperSettings) => {
+        log.debug('handleDeveloperModeUpdated', json);
+
+        if (['browserOnly', 'disableContextMenu'].some((key) => Object.hasOwn(json, key))) {
+            this.views.forEach((view) => view.destroy());
+            this.views = new Map();
+            this.closedViews = new Map();
+            this.init();
+        }
+    };
 
     getView = (viewId: string) => {
         return this.views.get(viewId);
-    }
+    };
 
     getCurrentView = () => {
         if (this.currentView) {
             return this.views.get(this.currentView);
         }
         return undefined;
-    }
+    };
 
     getViewByWebContentsId = (webContentsId: number) => {
         return [...this.views.values()].find((view) => view.webContentsId === webContentsId);
-    }
+    };
 
     isViewClosed = (viewId: string) => {
         return this.closedViews.has(viewId);
-    }
+    };
 
     showById = (viewId: string) => {
         this.getViewLogger(viewId).debug('showById', viewId);
@@ -139,14 +158,14 @@ export class ViewManager {
         } else {
             this.getViewLogger(viewId).warn(`Couldn't find a view with name: ${viewId}`);
         }
-        modalManager.showModal();
-    }
+        ModalManager.showModal();
+    };
 
     focusCurrentView = () => {
         log.debug('focusCurrentView');
 
-        if (modalManager.isModalDisplayed()) {
-            modalManager.focusCurrentModal();
+        if (ModalManager.isModalDisplayed()) {
+            ModalManager.focusCurrentModal();
             return;
         }
 
@@ -154,15 +173,15 @@ export class ViewManager {
         if (view) {
             view.focus();
         }
-    }
+    };
 
     reload = () => {
         const currentView = this.getCurrentView();
         if (currentView) {
             LoadingScreen.show();
-            currentView.reload();
+            currentView.reload(currentView.currentURL);
         }
-    }
+    };
 
     sendToAllViews = (channel: string, ...args: unknown[]) => {
         this.views.forEach((view) => {
@@ -170,11 +189,11 @@ export class ViewManager {
                 view.sendToRenderer(channel, ...args);
             }
         });
-    }
+    };
 
     sendToFind = () => {
         this.getCurrentView()?.openFind();
-    }
+    };
 
     /**
      * Deep linking
@@ -189,29 +208,30 @@ export class ViewManager {
                 if (this.closedViews.has(view.id)) {
                     this.openClosedView(view.id, urlWithSchema);
                 } else {
-                    const browserView = this.views.get(view.id);
-                    if (!browserView) {
+                    const webContentsView = this.views.get(view.id);
+                    if (!webContentsView) {
                         log.error(`Couldn't find a view matching the id ${view.id}`);
                         return;
                     }
 
-                    if (browserView.isReady() && ServerManager.getRemoteInfo(browserView.view.server.id)?.serverVersion && Utils.isVersionGreaterThanOrEqualTo(ServerManager.getRemoteInfo(browserView.view.server.id)?.serverVersion ?? '', '6.0.0')) {
-                        const pathName = `/${urlWithSchema.replace(browserView.view.server.url.toString(), '')}`;
-                        browserView.sendToRenderer(BROWSER_HISTORY_PUSH, pathName);
-                        this.deeplinkSuccess(browserView.id);
+                    if (webContentsView.isReady() && ServerManager.getRemoteInfo(webContentsView.view.server.id)?.serverVersion && Utils.isVersionGreaterThanOrEqualTo(ServerManager.getRemoteInfo(webContentsView.view.server.id)?.serverVersion ?? '', '6.0.0')) {
+                        const formattedServerURL = `${webContentsView.view.server.url.origin}${getFormattedPathName(webContentsView.view.server.url.pathname)}`;
+                        const pathName = `/${urlWithSchema.replace(formattedServerURL, '')}`;
+                        webContentsView.sendToRenderer(BROWSER_HISTORY_PUSH, pathName);
+                        this.deeplinkSuccess(webContentsView.id);
                     } else {
                         // attempting to change parsedURL protocol results in it not being modified.
-                        browserView.resetLoadingStatus();
-                        browserView.load(urlWithSchema);
-                        browserView.once(LOAD_SUCCESS, this.deeplinkSuccess);
-                        browserView.once(LOAD_FAILED, this.deeplinkFailed);
+                        webContentsView.resetLoadingStatus();
+                        webContentsView.load(urlWithSchema);
+                        webContentsView.once(LOAD_SUCCESS, this.deeplinkSuccess);
+                        webContentsView.once(LOAD_FAILED, this.deeplinkFailed);
                     }
                 }
+            } else if (ServerManager.hasServers()) {
+                ServerViewState.showNewServerModal(`${parsedURL.host}${getFormattedPathName(parsedURL.pathname)}${parsedURL.search}`);
             } else {
-                dialog.showErrorBox(
-                    localizeMessage('main.views.viewManager.handleDeepLink.error.title', 'No matching server'),
-                    localizeMessage('main.views.viewManager.handleDeepLink.error.body', 'There is no configured server in the app that matches the requested url: {url}', {url: parsedURL.toString()}),
-                );
+                ModalManager.removeModal('welcomeScreen');
+                handleWelcomeScreenModal(`${parsedURL.host}${getFormattedPathName(parsedURL.pathname)}${parsedURL.search}`);
             }
         }
     };
@@ -226,7 +246,7 @@ export class ViewManager {
     private deeplinkFailed = (viewId: string, err: string, url: string) => {
         this.getViewLogger(viewId).error(`failed to load deeplink ${url}`, err);
         this.views.get(viewId)?.removeListener(LOAD_SUCCESS, this.deeplinkSuccess);
-    }
+    };
 
     /**
      * View loading helpers
@@ -235,38 +255,50 @@ export class ViewManager {
     private loadServer = (server: MattermostServer) => {
         const views = ServerManager.getOrderedTabsForServer(server.id);
         views.forEach((view) => this.loadView(server, view));
-    }
+    };
 
     private loadView = (srv: MattermostServer, view: MattermostView, url?: string) => {
         if (!view.isOpen) {
             this.closedViews.set(view.id, {srv, view});
             return;
         }
-        const browserView = this.makeView(srv, view, url);
-        this.addView(browserView);
-    }
+        const webContentsView = this.makeView(srv, view, url);
+        this.addView(webContentsView);
+    };
 
-    private makeView = (srv: MattermostServer, view: MattermostView, url?: string): MattermostBrowserView => {
+    private makeView = (srv: MattermostServer, view: MattermostView, url?: string): MattermostWebContentsView => {
         const mainWindow = MainWindow.get();
         if (!mainWindow) {
             throw new Error('Cannot create view, no main window present');
         }
 
-        const browserView = new MattermostBrowserView(view, {webPreferences: {spellcheck: Config.useSpellChecker}});
-        browserView.once(LOAD_SUCCESS, this.activateView);
-        browserView.on(LOADSCREEN_END, this.finishLoading);
-        browserView.on(LOAD_FAILED, this.failLoading);
-        browserView.on(UPDATE_TARGET_URL, this.showURLView);
-        browserView.load(url);
-        return browserView;
-    }
+        const webContentsView = new MattermostWebContentsView(view, {webPreferences: {spellcheck: Config.useSpellChecker}});
+        webContentsView.once(LOAD_SUCCESS, this.activateView);
+        webContentsView.on(LOADSCREEN_END, this.finishLoading);
+        webContentsView.on(LOAD_FAILED, this.failLoading);
+        webContentsView.on(UPDATE_TARGET_URL, this.showURLView);
+        webContentsView.load(url);
+        return webContentsView;
+    };
 
-    private addView = (view: MattermostBrowserView): void => {
+    private addView = (view: MattermostWebContentsView): void => {
         this.views.set(view.id, view);
-        if (this.closedViews.has(view.id)) {
-            this.closedViews.delete(view.id);
+
+        // Force a permission check for notifications
+        if (view.view.type === TAB_MESSAGING) {
+            const notificationPermission = PermissionsManager.getForServer(view.view.server)?.notifications;
+            if (!notificationPermission || (!notificationPermission.allowed && notificationPermission.alwaysDeny !== true)) {
+                PermissionsManager.doPermissionRequest(
+                    view.webContentsId,
+                    'notifications',
+                    {
+                        requestingUrl: view.view.server.url.toString(),
+                        isMainFrame: false,
+                    },
+                );
+            }
         }
-    }
+    };
 
     private showInitial = () => {
         log.verbose('showInitial');
@@ -280,7 +312,7 @@ export class ViewManager {
         } else {
             MainWindow.get()?.webContents.send(SET_ACTIVE_VIEW);
         }
-    }
+    };
 
     /**
      * Mattermost view event handlers
@@ -292,7 +324,7 @@ export class ViewManager {
         if (this.currentView === viewId) {
             this.showById(this.currentView);
         }
-    }
+    };
 
     private finishLoading = (viewId: string) => {
         this.getViewLogger(viewId).debug('finishLoading');
@@ -301,7 +333,7 @@ export class ViewManager {
             this.showById(this.currentView);
             LoadingScreen.fade();
         }
-    }
+    };
 
     private failLoading = (viewId: string) => {
         this.getViewLogger(viewId).debug('failLoading');
@@ -310,7 +342,7 @@ export class ViewManager {
         if (this.currentView === viewId) {
             this.getCurrentView()?.hide();
         }
-    }
+    };
 
     private showURLView = (url: URL | string) => {
         log.silly('showURLView', url);
@@ -325,35 +357,24 @@ export class ViewManager {
         }
         if (url && url !== '') {
             const urlString = typeof url === 'string' ? url : url.toString();
-            const preload = getLocalPreload('desktopAPI.js');
-            const urlView = new BrowserView({
-                webPreferences: {
-                    preload,
-
-                    // Workaround for this issue: https://github.com/electron/electron/issues/30993
-                    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                    // @ts-ignore
-                    transparent: true,
-                }});
-            const query = new Map([['url', urlString]]);
-            const localURL = getLocalURLString('urlView.html', query);
+            const urlView = new WebContentsView({webPreferences: {preload: getLocalPreload('internalAPI.js')}});
+            urlView.setBackgroundColor('#00000000');
+            const localURL = `mattermost-desktop://renderer/urlView.html?url=${encodeURIComponent(urlString)}`;
+            performanceMonitor.registerView('URLView', urlView.webContents);
             urlView.webContents.loadURL(localURL);
-            MainWindow.get()?.addBrowserView(urlView);
+            MainWindow.get()?.contentView.addChildView(urlView);
             const boundaries = this.views.get(this.currentView || '')?.getBounds() ?? MainWindow.getBounds();
 
             const hideView = () => {
                 delete this.urlViewCancel;
                 try {
-                    mainWindow.removeBrowserView(urlView);
+                    mainWindow.contentView.removeChildView(urlView);
                 } catch (e) {
                     log.error('Failed to remove URL view', e);
                 }
 
-                // workaround to eliminate zombie processes
-                // https://github.com/mattermost/desktop/pull/1519
-                // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                // @ts-ignore
-                urlView.webContents.destroy();
+                performanceMonitor.unregisterView(urlView.webContents.id);
+                urlView.webContents.close();
             };
 
             const adjustWidth = (event: IpcMainEvent, width: number) => {
@@ -385,7 +406,7 @@ export class ViewManager {
                 hideView();
             };
         }
-    }
+    };
 
     /**
      * Event Handlers
@@ -400,12 +421,12 @@ export class ViewManager {
 
         const currentViewId: string | undefined = this.views.get(this.currentView as string)?.view.id;
 
-        const current: Map<string, MattermostBrowserView> = new Map();
+        const current: Map<string, MattermostWebContentsView> = new Map();
         for (const view of this.views.values()) {
             current.set(view.view.id, view);
         }
 
-        const views: Map<string, MattermostBrowserView> = new Map();
+        const views: Map<string, MattermostWebContentsView> = new Map();
         const closed: Map<string, {srv: MattermostServer; view: MattermostView}> = new Map();
 
         const sortedViews = ServerManager.getAllServers().flatMap((x) => ServerManager.getOrderedTabsForServer(x.id).
@@ -418,7 +439,7 @@ export class ViewManager {
             } else if (recycle) {
                 views.set(view.id, recycle);
             } else {
-                views.set(view.id, this.makeView(srv, view));
+                views.set(view.id, this.makeView(srv, view, srv.initialLoadURL?.toString()));
             }
         }
 
@@ -433,7 +454,7 @@ export class ViewManager {
         // commit views
         this.views = new Map();
         for (const x of views.values()) {
-            this.views.set(x.id, x);
+            this.addView(x);
         }
 
         // commit closed
@@ -463,24 +484,35 @@ export class ViewManager {
         } else {
             this.showInitial();
         }
-    }
+    };
 
     private handleHistory = (event: IpcMainEvent, offset: number) => {
         this.getCurrentView()?.goToOffset(offset);
-    }
+    };
 
-    private handleAppLoggedIn = (event: IpcMainEvent, viewId: string) => {
-        this.getView(viewId)?.onLogin(true);
-    }
+    private handleTabLoginChanged = (event: IpcMainEvent, loggedIn: boolean) => {
+        log.debug('handleTabLoggedIn', event.sender.id);
+        const view = this.getViewByWebContentsId(event.sender.id);
+        if (!view) {
+            return;
+        }
 
-    private handleAppLoggedOut = (event: IpcMainEvent, viewId: string) => {
-        this.getView(viewId)?.onLogin(false);
-    }
+        // This method is only called when the specific view is logged in
+        // so we need to call the `onLogin` for all of the views for the same server
+        [...this.views.values()].
+            filter((v) => v.view.server.id === view.view.server.id).
+            forEach((v) => v.onLogin(loggedIn));
 
-    private handleBrowserHistoryPush = (e: IpcMainEvent, viewId: string, pathName: string) => {
-        log.debug('handleBrowserHistoryPush', {viewId, pathName});
+        if (!loggedIn) {
+            AppState.clear(view.id);
+        }
+        flushCookiesStore();
+    };
 
-        const currentView = this.getView(viewId);
+    private handleBrowserHistoryPush = (e: IpcMainEvent, pathName: string) => {
+        log.debug('handleBrowserHistoryPush', e.sender.id, pathName);
+
+        const currentView = this.getViewByWebContentsId(e.sender.id);
         if (!currentView) {
             return;
         }
@@ -488,16 +520,16 @@ export class ViewManager {
         if (currentView.view.server.url.pathname !== '/' && pathName.startsWith(currentView.view.server.url.pathname)) {
             cleanedPathName = pathName.replace(currentView.view.server.url.pathname, '');
         }
-        const redirectedviewId = ServerManager.lookupViewByURL(`${currentView.view.server.url.toString().replace(/\/$/, '')}${cleanedPathName}`)?.id || viewId;
+        const redirectedviewId = ServerManager.lookupViewByURL(`${currentView.view.server.url.toString().replace(/\/$/, '')}${cleanedPathName}`)?.id || currentView.id;
         if (this.isViewClosed(redirectedviewId)) {
             // If it's a closed view, just open it and stop
             this.openClosedView(redirectedviewId, `${currentView.view.server.url}${cleanedPathName}`);
             return;
         }
         let redirectedView = this.getView(redirectedviewId) || currentView;
-        if (redirectedView !== currentView && redirectedView?.view.server.id === ServerViewState.getCurrentServer().id && redirectedView?.isLoggedIn) {
-            log.info('redirecting to a new view', redirectedView?.id || viewId);
-            this.showById(redirectedView?.id || viewId);
+        if (redirectedView !== currentView && redirectedView?.view.server.id === ServerViewState.getCurrentServer().id && (redirectedView?.isLoggedIn || cleanedPathName === '/')) {
+            log.info('redirecting to a new view', redirectedView?.id || currentView.id);
+            this.showById(redirectedView?.id || currentView.id);
         } else {
             redirectedView = currentView;
         }
@@ -505,27 +537,27 @@ export class ViewManager {
         // Special case check for Channels to not force a redirect to "/", causing a refresh
         if (!(redirectedView !== currentView && redirectedView?.view.type === TAB_MESSAGING && cleanedPathName === '/')) {
             redirectedView?.sendToRenderer(BROWSER_HISTORY_PUSH, cleanedPathName);
-            if (redirectedView) {
-                this.handleBrowserHistoryButton(e, redirectedView.id);
-            }
+            redirectedView?.updateHistoryButton();
         }
-    }
+    };
 
-    private handleBrowserHistoryButton = (e: IpcMainEvent, viewId: string) => {
-        this.getView(viewId)?.updateHistoryButton();
-    }
+    private handleRequestBrowserHistoryStatus = (e: IpcMainInvokeEvent) => {
+        log.silly('handleRequestBrowserHistoryStatus', e.sender.id);
 
-    private handleReactAppInitialized = (e: IpcMainEvent, viewId: string) => {
-        log.debug('handleReactAppInitialized', viewId);
+        return this.getViewByWebContentsId(e.sender.id)?.getBrowserHistoryStatus();
+    };
 
-        const view = this.views.get(viewId);
+    private handleReactAppInitialized = (e: IpcMainEvent) => {
+        log.debug('handleReactAppInitialized', e.sender.id);
+
+        const view = this.getViewByWebContentsId(e.sender.id);
         if (view) {
             view.setInitialized();
             if (this.getCurrentView() === view) {
                 LoadingScreen.fade();
             }
         }
-    }
+    };
 
     private handleReloadCurrentView = () => {
         log.debug('handleReloadCurrentView');
@@ -536,31 +568,38 @@ export class ViewManager {
         }
         view?.reload();
         this.showById(view?.id);
-    }
+    };
 
-    // if favicon is null, it means it is the initial load,
-    // so don't memoize as we don't have the favicons and there is no rush to find out.
-    private handleFaviconIsUnread = (e: Event, favicon: string, viewId: string, result: boolean) => {
-        log.silly('handleFaviconIsUnread', {favicon, viewId, result});
+    private handleUnreadsAndMentionsChanged = (e: IpcMainEvent, isUnread: boolean, mentionCount: number) => {
+        log.silly('handleUnreadsAndMentionsChanged', {webContentsId: e.sender.id, isUnread, mentionCount});
 
-        AppState.updateUnreads(viewId, result);
-    }
+        const view = this.getViewByWebContentsId(e.sender.id);
+        if (!view) {
+            return;
+        }
+        AppState.updateUnreads(view.id, isUnread);
+        AppState.updateMentions(view.id, mentionCount);
+    };
 
-    private handleSessionExpired = (event: IpcMainEvent, isExpired: boolean, viewId: string) => {
-        ServerManager.getViewLog(viewId, 'ViewManager').debug('handleSessionExpired', isExpired);
+    private handleSessionExpired = (event: IpcMainEvent, isExpired: boolean) => {
+        const view = this.getViewByWebContentsId(event.sender.id);
+        if (!view) {
+            return;
+        }
+        ServerManager.getViewLog(view.id, 'ViewManager').debug('handleSessionExpired', isExpired);
 
-        AppState.updateExpired(viewId, isExpired);
-    }
+        AppState.updateExpired(view.id, isExpired);
+    };
 
     private handleSetCurrentViewBounds = (newBounds: Electron.Rectangle) => {
         log.debug('handleSetCurrentViewBounds', newBounds);
 
         const currentView = this.getCurrentView();
         if (currentView && currentView.currentURL) {
-            const adjustedBounds = getAdjustedWindowBoundaries(newBounds.width, newBounds.height, shouldHaveBackBar(currentView.view.url, currentView.currentURL));
+            const adjustedBounds = getAdjustedWindowBoundaries(newBounds.width, newBounds.height);
             currentView.setBounds(adjustedBounds);
         }
-    }
+    };
 
     /**
      * Helper functions
@@ -573,19 +612,22 @@ export class ViewManager {
         const {srv, view} = this.closedViews.get(id)!;
         view.isOpen = true;
         this.loadView(srv, view, url);
+        if (this.closedViews.has(view.id)) {
+            this.closedViews.delete(view.id);
+        }
         this.showById(id);
-        const browserView = this.views.get(id)!;
-        browserView.isVisible = true;
-        browserView.on(LOAD_SUCCESS, () => {
-            browserView.isVisible = false;
+        const webContentsView = this.views.get(id)!;
+        webContentsView.isVisible = true;
+        webContentsView.on(LOAD_SUCCESS, () => {
+            webContentsView.isVisible = false;
             this.showById(id);
         });
         ipcMain.emit(OPEN_VIEW, null, view.id);
-    }
+    };
 
     private getViewLogger = (viewId: string) => {
         return ServerManager.getViewLog(viewId, 'ViewManager');
-    }
+    };
 
     private handleGetViewInfoForTest = (event: IpcMainInvokeEvent) => {
         const view = this.getViewByWebContentsId(event.sender.id);
@@ -598,7 +640,7 @@ export class ViewManager {
             serverName: view.view.server.name,
             viewType: view.view.type,
         };
-    }
+    };
 }
 
 const viewManager = new ViewManager();

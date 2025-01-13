@@ -3,23 +3,25 @@
 
 import {v4 as uuid} from 'uuid';
 
-import {UniqueServer, Server} from 'types/config';
-
 import {parseURL} from 'common/utils/url';
+
+import type {UniqueServer, Server} from 'types/config';
 
 export class MattermostServer {
     id: string;
     name: string;
     url!: URL;
     isPredefined: boolean;
+    initialLoadURL?: URL;
 
-    constructor(server: Server, isPredefined: boolean) {
+    constructor(server: Server, isPredefined: boolean, initialLoadURL?: URL) {
         this.id = uuid();
 
         this.name = server.name;
         this.updateURL(server.url);
 
         this.isPredefined = isPredefined;
+        this.initialLoadURL = initialLoadURL;
     }
 
     updateURL = (url: string) => {
@@ -27,7 +29,7 @@ export class MattermostServer {
         if (!this.url) {
             throw new Error('Invalid url for creating a server');
         }
-    }
+    };
 
     toUniqueServer = (): UniqueServer => {
         return {
@@ -36,5 +38,5 @@ export class MattermostServer {
             id: this.id,
             isPredefined: this.isPredefined,
         };
-    }
+    };
 }

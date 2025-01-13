@@ -2,8 +2,9 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {BrowserView, BrowserWindow, ContextMenuParams, Event} from 'electron';
-import electronContextMenu, {Options} from 'electron-context-menu';
+import type {WebContentsView, BrowserWindow, ContextMenuParams, Event} from 'electron';
+import type {Options} from 'electron-context-menu';
+import electronContextMenu from 'electron-context-menu';
 
 import {parseURL} from 'common/utils/url';
 
@@ -13,7 +14,7 @@ const defaultMenuOptions = {
         let isInternalSrc;
         try {
             const srcurl = parseURL(p.srcURL);
-            isInternalSrc = srcurl?.protocol === 'file:';
+            isInternalSrc = srcurl?.protocol === 'mattermost-desktop:';
         } catch (err) {
             isInternalSrc = false;
         }
@@ -28,11 +29,11 @@ const defaultMenuOptions = {
 };
 
 export default class ContextMenu {
-    view: BrowserWindow | BrowserView;
+    view: BrowserWindow | WebContentsView;
     menuOptions: Options;
     menuDispose?: () => void;
 
-    constructor(options: Options, view: BrowserWindow | BrowserView) {
+    constructor(options: Options, view: BrowserWindow | WebContentsView) {
         const providedOptions: Options = options || {};
 
         this.menuOptions = Object.assign({}, defaultMenuOptions, providedOptions);
@@ -46,12 +47,12 @@ export default class ContextMenu {
             this.menuDispose();
             delete this.menuDispose;
         }
-    }
+    };
 
     reload = () => {
         this.dispose();
 
-        const options = {window: this.view, ...this.menuOptions};
+        const options = {window: this.view.webContents, ...this.menuOptions};
         this.menuDispose = electronContextMenu(options);
-    }
+    };
 }

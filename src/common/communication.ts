@@ -1,6 +1,8 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+export const GET_APP_INFO = 'get-app-info';
+
 export const SWITCH_SERVER = 'switch-server';
 export const SWITCH_TAB = 'switch-tab';
 export const CLOSE_VIEW = 'close-view';
@@ -43,10 +45,7 @@ export const MODAL_RESULT = 'modal-result';
 export const MODAL_OPEN = 'modal-open';
 export const MODAL_CLOSE = 'modal-close';
 export const NOTIFY_MENTION = 'notify_mention';
-export const WINDOW_CLOSE = 'window_close';
-export const WINDOW_MINIMIZE = 'window_minimize';
-export const WINDOW_MAXIMIZE = 'window_maximize';
-export const WINDOW_RESTORE = 'window_restore';
+export const EXIT_FULLSCREEN = 'exit-fullscreen';
 export const GET_FULL_SCREEN_STATUS = 'get-full-screen-status';
 
 export const UPDATE_TARGET_URL = 'update_target_url';
@@ -56,14 +55,10 @@ export const PLAY_SOUND = 'play_sound';
 export const GET_DOWNLOAD_LOCATION = 'get_download_location';
 
 export const UPDATE_MENTIONS = 'update_mentions';
-export const IS_UNREAD = 'is_unread';
-export const UNREAD_RESULT = 'unread_result';
+export const UNREADS_AND_MENTIONS = 'unreads-and-mentions';
 export const SESSION_EXPIRED = 'session_expired';
 
-export const SET_VIEW_OPTIONS = 'set-view-name';
 export const REACT_APP_INITIALIZED = 'react-app-initialized';
-
-export const TOGGLE_BACK_BUTTON = 'toggle-back-button';
 
 export const SHOW_SETTINGS_WINDOW = 'show-settings-window';
 
@@ -93,10 +88,8 @@ export const START_UPGRADE = 'start-upgrade';
 export const CHECK_FOR_UPDATES = 'check-for-updates';
 export const NO_UPDATE_AVAILABLE = 'no-update-available';
 
-export const BROWSER_HISTORY_BUTTON = 'browser-history-button';
 export const BROWSER_HISTORY_PUSH = 'browser-history-push';
-export const APP_LOGGED_IN = 'app-logged-in';
-export const APP_LOGGED_OUT = 'app-logged-out';
+export const TAB_LOGIN_CHANGED = 'tab-login-changed';
 
 export const GET_AVAILABLE_SPELL_CHECKER_LANGUAGES = 'get-available-spell-checker-languages';
 
@@ -115,22 +108,21 @@ export const PING_DOMAIN = 'ping-domain';
 export const GET_LANGUAGE_INFORMATION = 'get-language-information';
 export const GET_AVAILABLE_LANGUAGES = 'get-available-languages';
 
-export const VIEW_FINISHED_RESIZING = 'view-finished-resizing';
-
 // Calls
-export const DISPATCH_GET_DESKTOP_SOURCES = 'dispatch-get-desktop-sources';
-export const DESKTOP_SOURCES_RESULT = 'desktop-sources-result';
+export const GET_DESKTOP_SOURCES = 'get-desktop-sources';
 export const DESKTOP_SOURCES_MODAL_REQUEST = 'desktop-sources-modal-request';
 export const CALLS_JOIN_CALL = 'calls-join-call';
 export const CALLS_LEAVE_CALL = 'calls-leave-call';
 export const CALLS_WIDGET_RESIZE = 'calls-widget-resize';
 export const CALLS_WIDGET_SHARE_SCREEN = 'calls-widget-share-screen';
-export const CALLS_WIDGET_CHANNEL_LINK_CLICK = 'calls-widget-channel-link-click';
 export const CALLS_LINK_CLICK = 'calls-link-click';
 export const CALLS_JOINED_CALL = 'calls-joined-call';
 export const CALLS_POPOUT_FOCUS = 'calls-popout-focus';
 export const CALLS_ERROR = 'calls-error';
 export const CALLS_JOIN_REQUEST = 'calls-join-request';
+export const CALLS_WIDGET_OPEN_THREAD = 'calls-widget-open-thread';
+export const CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL = 'calls-widget-open-stop-recording-modal';
+export const CALLS_WIDGET_OPEN_USER_SETTINGS = 'calls-widget-open-user-settings';
 
 export const REQUEST_CLEAR_DOWNLOADS_DROPDOWN = 'request-clear-downloads-dropdown';
 export const CLOSE_DOWNLOADS_DROPDOWN = 'close-downloads-dropdown';
@@ -143,7 +135,6 @@ export const DOWNLOADS_DROPDOWN_OPEN_FILE = 'downloads-dropdown-open-file';
 export const REQUEST_HAS_DOWNLOADS = 'request-has-downloads';
 export const DOWNLOADS_DROPDOWN_FOCUSED = 'downloads-dropdown-focused';
 export const RECEIVE_DOWNLOADS_DROPDOWN_SIZE = 'receive-downloads-dropdown-size';
-export const GET_DOWNLOADED_IMAGE_THUMBNAIL_LOCATION = 'get-downloaded-image-thumbnail-location';
 
 export const OPEN_DOWNLOADS_DROPDOWN_MENU = 'open-downloads-dropdown-menu';
 export const CLOSE_DOWNLOADS_DROPDOWN_MENU = 'close-downloads-dropdown-menu';
@@ -177,3 +168,22 @@ export const VALIDATE_SERVER_URL = 'validate-server-url';
 export const GET_IS_DEV_MODE = 'get-is-dev-mode';
 
 export const TOGGLE_SECURE_INPUT = 'toggle-secure-input';
+
+export const REQUEST_BROWSER_HISTORY_STATUS = 'request-browser-history-status';
+export const BROWSER_HISTORY_STATUS_UPDATED = 'browser-history-status-updated';
+
+export const NOTIFICATION_CLICKED = 'notification-clicked';
+
+export const OPEN_NOTIFICATION_PREFERENCES = 'open-notification-preferences';
+export const OPEN_WINDOWS_CAMERA_PREFERENCES = 'open-windows-camera-preferences';
+export const OPEN_WINDOWS_MICROPHONE_PREFERENCES = 'open-windows-microphone-preferences';
+export const GET_MEDIA_ACCESS_STATUS = 'get-media-access-status';
+
+export const GET_NONCE = 'get-nonce';
+
+export const DEVELOPER_MODE_UPDATED = 'developer-mode-updated';
+export const IS_DEVELOPER_MODE_ENABLED = 'is-developer-mode-enabled';
+
+export const METRICS_SEND = 'metrics-send';
+export const METRICS_RECEIVE = 'metrics-receive';
+export const METRICS_REQUEST = 'metrics-request';

@@ -1,7 +1,6 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-/* eslint-disable import/order */
 import bg from './bg.json';
 import de from './de.json';
 import en from './en.json';
@@ -22,8 +21,8 @@ import sv from './sv.json';
 import tr from './tr.json';
 import uk from './uk.json';
 import vi from './vi.json';
-import zhTW from './zh-TW.json';
 import zhCN from './zh-CN.json';
+import zhTW from './zh-TW.json';
 
 export type Language = {
     value: string;
@@ -149,7 +148,7 @@ export const languages: Record<string, Language> = {
     },
     'zh-CN': {
         value: 'zh-CN',
-        name: '中文 (简体)',
+        name: '中文 (简体) (Beta)',
         order: 19,
         url: zhCN,
     },

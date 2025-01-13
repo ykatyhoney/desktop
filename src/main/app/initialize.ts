@@ -2,8 +2,9 @@
 // See LICENSE.txt for license information.
 
 import path from 'path';
+import {pathToFileURL} from 'url';
 
-import {app, ipcMain, nativeTheme, session} from 'electron';
+import {app, ipcMain, nativeTheme, net, protocol, session} from 'electron';
 import installExtension, {REACT_DEVELOPER_TOOLS} from 'electron-extension-installer';
 import isDev from 'electron-is-dev';
 
@@ -24,16 +25,16 @@ import {
     UPDATE_PATHS,
     SERVERS_URL_MODIFIED,
     GET_DARK_MODE,
-    WINDOW_CLOSE,
-    WINDOW_MAXIMIZE,
-    WINDOW_MINIMIZE,
-    WINDOW_RESTORE,
     DOUBLE_CLICK_ON_WINDOW,
     TOGGLE_SECURE_INPUT,
+    GET_APP_INFO,
+    SHOW_SETTINGS_WINDOW,
+    DEVELOPER_MODE_UPDATED,
 } from 'common/communication';
 import Config from 'common/config';
 import {Logger} from 'common/log';
-
+import ServerManager from 'common/servers/serverManager';
+import {parseURL} from 'common/utils/url';
 import AllowProtocolDialog from 'main/allowProtocolDialog';
 import AppVersionManager from 'main/AppVersionManager';
 import AuthManager from 'main/authManager';
@@ -43,18 +44,19 @@ import {setupBadge} from 'main/badge';
 import CertificateManager from 'main/certificateManager';
 import {configPath, updatePaths} from 'main/constants';
 import CriticalErrorHandler from 'main/CriticalErrorHandler';
+import DeveloperMode from 'main/developerMode';
 import downloadsManager from 'main/downloadsManager';
 import i18nManager from 'main/i18nManager';
+import NonceManager from 'main/nonceManager';
+import {getDoNotDisturb} from 'main/notifications';
 import parseArgs from 'main/ParseArgs';
+import PerformanceMonitor from 'main/performanceMonitor';
 import PermissionsManager from 'main/permissionsManager';
-import ServerManager from 'common/servers/serverManager';
-import TrustedOriginsStore from 'main/trustedOrigins';
 import Tray from 'main/tray/tray';
+import TrustedOriginsStore from 'main/trustedOrigins';
 import UserActivityMonitor from 'main/UserActivityMonitor';
 import ViewManager from 'main/views/viewManager';
 import MainWindow from 'main/windows/mainWindow';
-
-import {protocols} from '../../../electron-builder.json';
 
 import {
     handleAppBeforeQuit,
@@ -81,6 +83,7 @@ import {
     handleQuit,
     handlePingDomain,
     handleToggleSecureInput,
+    handleShowSettingsModal,
 } from './intercom';
 import {
     clearAppCache,
@@ -89,18 +92,16 @@ import {
     shouldShowTrayIcon,
     updateSpellCheckerLocales,
     wasUpdated,
-    initCookieManager,
     migrateMacAppStore,
     updateServerInfos,
+    flushCookiesStore,
 } from './utils';
 import {
-    handleClose,
     handleDoubleClick,
     handleGetDarkMode,
-    handleMaximize,
-    handleMinimize,
-    handleRestore,
 } from './windows';
+
+import {protocols} from '../../../electron-builder.json';
 
 export const mainProtocol = protocols?.[0]?.schemes?.[0];
 
@@ -200,6 +201,12 @@ function initializeAppEventListeners() {
     app.on('child-process-gone', handleChildProcessGone);
     app.on('login', AuthManager.handleAppLogin);
     app.on('will-finish-launching', handleAppWillFinishLaunching);
+
+    // Somehow cookies are not immediately saved to disk.
+    // So manually flush cookie store to disk on closing the app.
+    // https://github.com/electron/electron/issues/8416
+    // TODO: We can remove this once every server supported will flush on login/logout
+    app.on('before-quit', flushCookiesStore);
 }
 
 function initializeBeforeAppReady() {
@@ -245,11 +252,15 @@ function initializeBeforeAppReady() {
         nativeTheme.on('updated', handleUpdateTheme);
         handleUpdateTheme();
     }
+
+    protocol.registerSchemesAsPrivileged([
+        {scheme: 'mattermost-desktop', privileges: {standard: true}},
+    ]);
 }
 
 function initializeInterCommunicationEventListeners() {
-    ipcMain.on(NOTIFY_MENTION, handleMentionNotification);
-    ipcMain.handle('get-app-version', handleAppVersion);
+    ipcMain.handle(NOTIFY_MENTION, handleMentionNotification);
+    ipcMain.handle(GET_APP_INFO, handleAppVersion);
     ipcMain.on(UPDATE_SHORTCUT_MENU, handleUpdateMenuEvent);
     ipcMain.on(FOCUS_BROWSERVIEW, ViewManager.focusCurrentView);
 
@@ -268,16 +279,34 @@ function initializeInterCommunicationEventListeners() {
     ipcMain.on(UPDATE_CONFIGURATION, updateConfiguration);
 
     ipcMain.handle(GET_DARK_MODE, handleGetDarkMode);
-    ipcMain.on(WINDOW_CLOSE, handleClose);
-    ipcMain.on(WINDOW_MAXIMIZE, handleMaximize);
-    ipcMain.on(WINDOW_MINIMIZE, handleMinimize);
-    ipcMain.on(WINDOW_RESTORE, handleRestore);
     ipcMain.on(DOUBLE_CLICK_ON_WINDOW, handleDoubleClick);
 
     ipcMain.on(TOGGLE_SECURE_INPUT, handleToggleSecureInput);
+
+    if (process.env.NODE_ENV === 'test') {
+        ipcMain.on(SHOW_SETTINGS_WINDOW, handleShowSettingsModal);
+    }
 }
 
 async function initializeAfterAppReady() {
+    protocol.handle('mattermost-desktop', (request: Request) => {
+        const url = parseURL(request.url);
+        if (!url) {
+            return new Response('bad', {status: 400});
+        }
+
+        // Including this snippet from the handler docs to check for path traversal
+        // https://www.electronjs.org/docs/latest/api/protocol#protocolhandlescheme-handler
+        const pathToServe = path.join(app.getAppPath(), 'renderer', url.pathname);
+        const relativePath = path.relative(app.getAppPath(), pathToServe);
+        const isSafe = relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+        if (!isSafe) {
+            return new Response('bad', {status: 400});
+        }
+
+        return net.fetch(pathToFileURL(pathToServe).toString());
+    });
+
     ServerManager.reloadFromConfig();
     updateServerInfos(ServerManager.getAllServers());
     ServerManager.on(SERVERS_URL_MODIFIED, (serverIds?: string[]) => {
@@ -288,6 +317,20 @@ async function initializeAfterAppReady() {
 
     app.setAppUserModelId('Mattermost.Desktop'); // Use explicit AppUserModelID
     const defaultSession = session.defaultSession;
+    defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        const url = parseURL(details.url);
+        if (url?.protocol === 'mattermost-desktop:' && url?.pathname.endsWith('html')) {
+            callback({
+                responseHeaders: {
+                    ...details.responseHeaders,
+                    'Content-Security-Policy': [`default-src 'self'; style-src 'self' 'nonce-${NonceManager.create(details.url)}'; media-src data:; img-src 'self' data:`],
+                },
+            });
+            return;
+        }
+
+        downloadsManager.webRequestOnHeadersReceivedHandler(details, callback);
+    });
 
     if (process.platform !== 'darwin') {
         defaultSession.on('spellcheck-dictionary-download-failure', (event, lang) => {
@@ -347,13 +390,12 @@ async function initializeAfterAppReady() {
             catch((err) => log.error('An error occurred: ', err));
     }
 
-    initCookieManager(defaultSession);
     MainWindow.show();
 
     let deeplinkingURL;
 
-    // Protocol handler for win32
-    if (process.platform === 'win32') {
+    // Protocol handler for win32 and linux
+    if (process.platform !== 'darwin') {
         const args = process.argv.slice(1);
         if (Array.isArray(args) && args.length > 0) {
             deeplinkingURL = getDeeplinkingURL(args);
@@ -363,14 +405,19 @@ async function initializeAfterAppReady() {
         }
     }
 
-    // listen for status updates and pass on to renderer
-    UserActivityMonitor.on('status', (status) => {
-        log.debug('UserActivityMonitor.on(status)', status);
-        ViewManager.sendToAllViews(USER_ACTIVITY_UPDATE, status);
-    });
+    // Call this to initiate a permissions check for DND state
+    getDoNotDisturb();
 
-    // start monitoring user activity (needs to be started after the app is ready)
-    UserActivityMonitor.startMonitoring();
+    DeveloperMode.switchOff('disableUserActivityMonitor', () => {
+        // listen for status updates and pass on to renderer
+        UserActivityMonitor.on('status', onUserActivityStatus);
+
+        // start monitoring user activity (needs to be started after the app is ready)
+        UserActivityMonitor.startMonitoring();
+    }, () => {
+        UserActivityMonitor.off('status', onUserActivityStatus);
+        UserActivityMonitor.stopMonitoring();
+    });
 
     if (shouldShowTrayIcon()) {
         Tray.init(Config.trayIconTheme);
@@ -388,6 +435,7 @@ async function initializeAfterAppReady() {
     }
 
     handleUpdateMenuEvent();
+    DeveloperMode.on(DEVELOPER_MODE_UPDATED, handleUpdateMenuEvent);
 
     ipcMain.emit('update-dict');
 
@@ -401,6 +449,19 @@ async function initializeAfterAppReady() {
     AppVersionManager.lastAppVersion = app.getVersion();
 
     handleMainWindowIsShown();
+
+    // The metrics won't start collecting for another minute
+    // so we can assume if we start now everything should be loaded by the time we're done
+    PerformanceMonitor.init();
+}
+
+function onUserActivityStatus(status: {
+    userIsActive: boolean;
+    idleTime: number;
+    isSystemEvent: boolean;
+}) {
+    log.debug('UserActivityMonitor.on(status)', status);
+    ViewManager.sendToAllViews(USER_ACTIVITY_UPDATE, status.userIsActive, status.idleTime, status.isSystemEvent);
 }
 
 function handleStartDownload() {

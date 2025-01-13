@@ -2,15 +2,18 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import React from 'react';
-import {Nav, NavItem, NavLink} from 'react-bootstrap';
-import {DragDropContext, Draggable, DraggingStyle, Droppable, DropResult, NotDraggingStyle} from 'react-beautiful-dnd';
-import {FormattedMessage, injectIntl, IntlShape} from 'react-intl';
 import classNames from 'classnames';
+import React from 'react';
+import type {DraggingStyle, DropResult, NotDraggingStyle} from 'react-beautiful-dnd';
+import {DragDropContext, Draggable, Droppable} from 'react-beautiful-dnd';
+import {Nav, NavItem, NavLink} from 'react-bootstrap';
+import type {IntlShape} from 'react-intl';
+import {FormattedMessage, injectIntl} from 'react-intl';
 
-import {UniqueView} from 'types/config';
+import type {ViewType} from 'common/views/View';
+import {canCloseView, getViewDisplayName} from 'common/views/View';
 
-import {ViewType, canCloseView, getViewDisplayName} from 'common/views/View';
+import type {UniqueView} from 'types/config';
 
 type Props = {
     activeTabId?: string;
@@ -29,6 +32,10 @@ type Props = {
     intl: IntlShape;
 };
 
+type State = {
+    nonce?: string;
+}
+
 function getStyle(style?: DraggingStyle | NotDraggingStyle) {
     if (style?.transform) {
         const axisLockX = `${style.transform.slice(0, style.transform.indexOf(','))}, 0px)`;
@@ -40,15 +47,32 @@ function getStyle(style?: DraggingStyle | NotDraggingStyle) {
     return style;
 }
 
-class TabBar extends React.PureComponent<Props> {
+class TabBar extends React.PureComponent<Props, State> {
+    constructor(props: Props) {
+        super(props);
+        this.state = {};
+    }
+
     onCloseTab = (id: string) => {
         return (event: React.MouseEvent<HTMLButtonElement>) => {
             event.stopPropagation();
             this.props.onCloseTab(id);
         };
+    };
+
+    componentDidMount(): void {
+        window.desktop.getNonce().then((nonce) => {
+            this.setState({
+                nonce,
+            });
+        });
     }
 
     render() {
+        if (!this.state.nonce) {
+            return null;
+        }
+
         const tabs = this.props.tabs.map((tab, index) => {
             const sessionExpired = this.props.sessionsExpired[tab.id!];
             const hasUnreads = this.props.unreadCounts[tab.id!];
@@ -142,7 +166,10 @@ class TabBar extends React.PureComponent<Props> {
         });
 
         return (
-            <DragDropContext onDragEnd={this.props.onDrop}>
+            <DragDropContext
+                nonce={this.state.nonce}
+                onDragEnd={this.props.onDrop}
+            >
                 <Droppable
                     isDropDisabled={this.props.tabsDisabled}
                     droppableId='tabBar'

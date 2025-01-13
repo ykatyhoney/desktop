@@ -4,7 +4,7 @@
 import {isHttpsUri, isHttpUri, isUri} from 'valid-url';
 
 import buildConfig from 'common/config/buildConfig';
-import {customLoginRegexPaths, nonTeamUrlPaths, CALLS_PLUGIN_ID} from 'common/utils/constants';
+import {nonTeamUrlPaths, CALLS_PLUGIN_ID} from 'common/utils/constants';
 
 export const getFormattedPathName = (pn: string) => (pn.endsWith('/') ? pn : `${pn}/`);
 export const parseURL = (inputURL: string | URL) => {
@@ -57,6 +57,7 @@ export const isUrlType = (urlType: string, serverURL: URL, inputURL: URL) => {
     getFormattedPathName(inputURL.pathname).startsWith(`/${urlType}/`));
 };
 
+export const isLoginUrl = (serverURL: URL, inputURL: URL) => isUrlType('login', serverURL, inputURL);
 export const isHelpUrl = (serverURL: URL, inputURL: URL) => isUrlType('help', serverURL, inputURL);
 export const isImageProxyUrl = (serverURL: URL, inputURL: URL) => isUrlType('api/v4/image', serverURL, inputURL);
 export const isPublicFilesUrl = (serverURL: URL, inputURL: URL) => isUrlType('files', serverURL, inputURL);
@@ -75,22 +76,6 @@ export const isTeamUrl = (serverURL: URL, inputURL: URL, withApi?: boolean) => {
         paths.push('api');
     }
     return !(paths.some((testPath) => isUrlType(testPath, serverURL, inputURL)));
-};
-export const isCustomLoginURL = (inputURL: URL, serverURL: URL) => {
-    if (!isTrustedURL(inputURL, serverURL)) {
-        return false;
-    }
-    const subpath = serverURL.pathname;
-    const urlPath = inputURL.pathname;
-    const replacement = subpath.endsWith('/') ? '/' : '';
-    const replacedPath = urlPath.replace(subpath, replacement);
-    for (const regexPath of customLoginRegexPaths) {
-        if (replacedPath.match(regexPath)) {
-            return true;
-        }
-    }
-
-    return false;
 };
 
 export const isCallsPopOutURL = (serverURL: URL, inputURL: URL, callID: string) => {

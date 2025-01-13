@@ -2,7 +2,6 @@
 // See LICENSE.txt for license information.
 
 import {handleConfigUpdate} from 'main/app/config';
-
 import AutoLauncher from 'main/AutoLauncher';
 
 import Tray from './tray';
@@ -31,6 +30,7 @@ jest.mock('electron', () => {
             getAppPath: () => '/path/to/app',
             isReady: jest.fn(),
             setPath: jest.fn(),
+            getPath: jest.fn(() => '/valid/downloads/path'),
         },
         ipcMain: {
             emit: jest.fn(),
@@ -58,6 +58,9 @@ jest.mock('main/AutoLauncher', () => ({
 }));
 jest.mock('main/badge', () => ({
     setUnreadBadgeSetting: jest.fn(),
+}));
+jest.mock('main/performanceMonitor', () => ({
+    registerView: jest.fn(),
 }));
 jest.mock('main/windows/mainWindow', () => ({
     sendToRenderer: jest.fn(),

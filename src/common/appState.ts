@@ -4,8 +4,8 @@
 import {EventEmitter} from 'events';
 
 import {UPDATE_APPSTATE, UPDATE_APPSTATE_TOTALS, UPDATE_APPSTATE_FOR_VIEW_ID} from 'common/communication';
-import ServerManager from 'common/servers/serverManager';
 import {Logger} from 'common/log';
+import ServerManager from 'common/servers/serverManager';
 
 const log = new Logger('AppState');
 
@@ -25,9 +25,9 @@ export class AppState extends EventEmitter {
     updateExpired = (viewId: string, expired: boolean) => {
         ServerManager.getViewLog(viewId, 'AppState').silly('updateExpired', expired);
 
-        this.unreads.set(viewId, expired);
+        this.expired.set(viewId, expired);
         this.emitStatusForView(viewId);
-    }
+    };
 
     updateMentions = (viewId: string, mentions: number) => {
         ServerManager.getViewLog(viewId, 'AppState').silly('updateMentions', mentions);
@@ -49,7 +49,9 @@ export class AppState extends EventEmitter {
         this.expired.delete(viewId);
         this.mentions.delete(viewId);
         this.unreads.delete(viewId);
-    }
+
+        this.emitStatusForView(viewId);
+    };
 
     emitStatus = () => {
         log.silly('emitStatus');

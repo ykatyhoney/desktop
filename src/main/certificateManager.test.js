@@ -2,9 +2,9 @@
 // See LICENSE.txt for license information.
 'use strict';
 
-import MainWindow from 'main/windows/mainWindow';
-import ModalManager from 'main/views/modalManager';
 import {CertificateManager} from 'main/certificateManager';
+import ModalManager from 'main/views/modalManager';
+import MainWindow from 'main/windows/mainWindow';
 
 jest.mock('main/windows/mainWindow', () => ({
     get: jest.fn().mockImplementation(() => ({})),
@@ -16,7 +16,6 @@ jest.mock('main/views/modalManager', () => ({
 
 jest.mock('main/utils', () => ({
     getLocalPreload: (file) => file,
-    getLocalURLString: (file) => file,
 }));
 
 describe('main/certificateManager', () => {

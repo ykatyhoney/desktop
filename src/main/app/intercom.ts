@@ -1,21 +1,20 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {app, IpcMainEvent, IpcMainInvokeEvent, Menu} from 'electron';
-
-import {UniqueServer} from 'types/config';
-import {MentionData} from 'types/notification';
+import type {IpcMainEvent, IpcMainInvokeEvent} from 'electron';
+import {app, Menu} from 'electron';
 
 import ServerViewState from 'app/serverViewState';
-
 import {Logger} from 'common/log';
 import ServerManager from 'common/servers/serverManager';
 import {ping} from 'common/utils/requests';
-
+import {parseURL} from 'common/utils/url';
 import NotificationManager from 'main/notifications';
-import {getLocalPreload, getLocalURLString} from 'main/utils';
+import {getLocalPreload} from 'main/utils';
 import ModalManager from 'main/views/modalManager';
 import MainWindow from 'main/windows/mainWindow';
+
+import type {UniqueServer} from 'types/config';
 
 import {handleAppBeforeQuit} from './app';
 
@@ -87,21 +86,28 @@ export function handleMainWindowIsShown() {
     }
 }
 
-export function handleWelcomeScreenModal() {
+export function handleWelcomeScreenModal(prefillURL?: string) {
     log.debug('handleWelcomeScreenModal');
 
-    const html = getLocalURLString('welcomeScreen.html');
+    const html = 'mattermost-desktop://renderer/welcomeScreen.html';
 
-    const preload = getLocalPreload('desktopAPI.js');
+    const preload = getLocalPreload('internalAPI.js');
 
     const mainWindow = MainWindow.get();
     if (!mainWindow) {
         return;
     }
-    const modalPromise = ModalManager.addModal<null, UniqueServer>('welcomeScreen', html, preload, null, mainWindow, !ServerManager.hasServers());
+    const modalPromise = ModalManager.addModal<{prefillURL?: string}, UniqueServer>('welcomeScreen', html, preload, {prefillURL}, mainWindow, !ServerManager.hasServers());
     if (modalPromise) {
         modalPromise.then((data) => {
-            const newServer = ServerManager.addServer(data);
+            let initialLoadURL;
+            if (prefillURL) {
+                const parsedServerURL = parseURL(data.url);
+                if (parsedServerURL) {
+                    initialLoadURL = parseURL(`${parsedServerURL.origin}${prefillURL.substring(prefillURL.indexOf('/'))}`);
+                }
+            }
+            const newServer = ServerManager.addServer(data, initialLoadURL);
             ServerViewState.switchServer(newServer.id, true);
         }).catch((e) => {
             // e is undefined for user cancellation
@@ -114,9 +120,9 @@ export function handleWelcomeScreenModal() {
     }
 }
 
-export function handleMentionNotification(event: IpcMainEvent, title: string, body: string, channel: {id: string}, teamId: string, url: string, silent: boolean, data: MentionData) {
-    log.debug('handleMentionNotification', {title, body, channel, teamId, url, silent, data});
-    NotificationManager.displayMention(title, body, channel, teamId, url, silent, event.sender, data);
+export function handleMentionNotification(event: IpcMainInvokeEvent, title: string, body: string, channelId: string, teamId: string, url: string, silent: boolean, soundName: string) {
+    log.debug('handleMentionNotification', {channelId, teamId, url, silent, soundName});
+    return NotificationManager.displayMention(title, body, channelId, teamId, url, silent, event.sender, soundName);
 }
 
 export function handleOpenAppMenu() {
@@ -161,4 +167,19 @@ export function handleToggleSecureInput(event: IpcMainEvent, secureInput: boolea
     // Enforce macOS to restrict processes from reading the keyboard input when in a password field
     log.debug('handleToggleSecureInput', secureInput);
     app.setSecureKeyboardEntryEnabled(secureInput);
+}
+
+export function handleShowSettingsModal() {
+    const mainWindow = MainWindow.get();
+    if (!mainWindow) {
+        return;
+    }
+
+    ModalManager.addModal(
+        'settingsModal',
+        'mattermost-desktop://renderer/settings.html',
+        getLocalPreload('internalAPI.js'),
+        null,
+        mainWindow,
+    );
 }

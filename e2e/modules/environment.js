@@ -3,17 +3,15 @@
 // See LICENSE.txt for license information.
 'use strict';
 
+const {execSync} = require('child_process');
 const fs = require('fs');
-
 const path = require('path');
 
-const ps = require('ps-node');
-
-const {_electron: electron} = require('playwright');
 const chai = require('chai');
 const {ipcRenderer} = require('electron');
-
-const {SHOW_SETTINGS_WINDOW} = require('../../src/common/communication');
+const {_electron: electron} = require('playwright');
+const ps = require('ps-node');
+const {SHOW_SETTINGS_WINDOW} = require('src/common/communication');
 
 const {asyncSleep, mkDirAsync, rmDirAsync, unlinkAsync} = require('./utils');
 chai.should();
@@ -182,6 +180,7 @@ module.exports = {
             }
         }
     },
+
     cleanDataDirAsync() {
         return rmDirAsync(userDataDir);
     },
@@ -191,6 +190,21 @@ module.exports = {
             fs.mkdirSync(userDataDir);
         }
     },
+
+    clipboard(textToCopy) {
+        switch (process.platform) {
+        case 'linux':
+            execSync(`echo "${textToCopy}" | xsel --clipboard`);
+            break;
+        case 'win32':
+            execSync(`echo ${textToCopy} | clip`);
+            break;
+        case 'darwin':
+            execSync(`pbcopy <<< ${textToCopy}`);
+            break;
+        }
+    },
+
     async createTestUserDataDirAsync() {
         await mkDirAsync(userDataDir);
     },
@@ -203,7 +217,7 @@ module.exports = {
                 RESOURCES_PATH: userDataDir,
             },
             executablePath: electronBinaryPath,
-            args: [`${path.join(sourceRootDir, 'dist')}`, `--user-data-dir=${userDataDir}`, '--disable-dev-mode', '--no-sandbox', ...args],
+            args: [`${path.join(sourceRootDir, 'e2e/dist')}`, `--user-data-dir=${userDataDir}`, '--disable-dev-mode', '--no-sandbox', ...args],
         };
 
         // if (process.env.MM_DEBUG_SETTINGS) {
@@ -252,8 +266,8 @@ module.exports = {
         await window.waitForSelector('#input_password-input');
         await window.waitForSelector('#saveSetting');
 
-        await window.type('#input_loginId', 'sysadmin');
-        await window.type('#input_password-input', 'Sys@dmin123');
+        await window.type('#input_loginId', process.env.MM_TEST_USER_NAME);
+        await window.type('#input_password-input', process.env.MM_TEST_PASSWORD);
         await window.click('#saveSetting');
     },
 
@@ -308,7 +322,6 @@ module.exports = {
 
     // execute the test only when `condition` is true
     shouldTest(it, condition) {
-    // eslint-disable-next-line no-only-tests/no-only-tests
         return condition ? it : it.skip;
     },
     isOneOf(platforms) {

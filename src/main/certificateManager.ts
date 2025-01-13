@@ -1,19 +1,19 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {Certificate, WebContents, Event} from 'electron';
-
-import {CertificateModalData} from 'types/certificate';
+import type {Certificate, WebContents, Event} from 'electron';
 
 import {Logger} from 'common/log';
 
+import type {CertificateModalData} from 'types/certificate';
+
+import {getLocalPreload} from './utils';
 import modalManager from './views/modalManager';
-import {getLocalURLString, getLocalPreload} from './utils';
 import MainWindow from './windows/mainWindow';
 
 const log = new Logger('CertificateManager');
-const preload = getLocalPreload('desktopAPI.js');
-const html = getLocalURLString('certificateModal.html');
+const preload = getLocalPreload('internalAPI.js');
+const html = 'mattermost-desktop://renderer/certificateModal.html';
 
 type CertificateModalResult = {
     cert: Certificate;
@@ -38,7 +38,7 @@ export class CertificateManager {
         } else {
             log.info(`There were ${list.length} candidate certificates. Skipping certificate selection`);
         }
-    }
+    };
 
     popCertificateModal = (url: string, list: Certificate[]) => {
         const mainWindow = MainWindow.get();
@@ -57,7 +57,7 @@ export class CertificateManager {
                 this.handleSelectedCertificate(url);
             });
         }
-    }
+    };
 
     handleSelectedCertificate = (server: string, cert?: Certificate) => {
         const callback = this.certificateRequestCallbackMap.get(server);
@@ -75,7 +75,7 @@ export class CertificateManager {
             }
         }
         this.certificateRequestCallbackMap.delete(server);
-    }
+    };
 }
 
 const certificateManager = new CertificateManager();

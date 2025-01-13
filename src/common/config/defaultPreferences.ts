@@ -2,15 +2,17 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import path from 'path';
 import os from 'os';
+import path from 'path';
+
+import {app} from 'electron';
 
 /**
  * Default user preferences. End-users can change these parameters by editing config.json
  * @param {number} version - Scheme version. (Not application version)
  */
 
-import {ConfigV3} from 'types/config';
+import type {ConfigV3} from 'types/config';
 
 export const getDefaultDownloadLocation = (): string | undefined => {
     // eslint-disable-next-line no-undef
@@ -24,7 +26,7 @@ export const getDefaultDownloadLocation = (): string | undefined => {
         return process.env.XDG_DOWNLOAD_DIR;
     }
 
-    return path.join(os.homedir(), 'Downloads');
+    return app.getPath('downloads') || path.join(os.homedir(), 'Downloads');
 };
 
 const defaultPreferences: ConfigV3 = {
@@ -49,6 +51,7 @@ const defaultPreferences: ConfigV3 = {
     downloadLocation: getDefaultDownloadLocation(),
     startInFullscreen: false,
     logLevel: 'info',
+    enableMetrics: true,
 };
 
 export default defaultPreferences;

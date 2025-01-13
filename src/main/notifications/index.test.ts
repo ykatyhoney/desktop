@@ -4,18 +4,17 @@
 'use strict';
 import notMockedCP from 'child_process';
 
-import {Notification as NotMockedNotification, shell, app, BrowserWindow, WebContents} from 'electron';
-
-import {getFocusAssist as notMockedGetFocusAssist} from 'windows-focus-assist';
+import type {BrowserWindow, IpcMain, IpcMainEvent, WebContents} from 'electron';
+import {Notification as NotMockedNotification, shell, app, ipcMain as NotMockedIpcMain} from 'electron';
 import {getDoNotDisturb as notMockedGetDarwinDoNotDisturb} from 'macos-notification-state';
+import {getFocusAssist as notMockedGetFocusAssist} from 'windows-focus-assist';
 
 import {PLAY_SOUND} from 'common/communication';
 import notMockedConfig from 'common/config';
-
 import {localizeMessage as notMockedLocalizeMessage} from 'main/i18nManager';
 import notMockedPermissionsManager from 'main/permissionsManager';
-import notMockedMainWindow from 'main/windows/mainWindow';
 import ViewManager from 'main/views/viewManager';
+import notMockedMainWindow from 'main/windows/mainWindow';
 
 import getLinuxDoNotDisturb from './dnd-linux';
 
@@ -29,13 +28,14 @@ const Config = jest.mocked(notMockedConfig);
 const MainWindow = jest.mocked(notMockedMainWindow);
 const localizeMessage = jest.mocked(notMockedLocalizeMessage);
 const cp = jest.mocked(notMockedCP);
+const ipcMain = jest.mocked(NotMockedIpcMain);
 
 const mentions: Array<{body: string; value: any}> = [];
 
 jest.mock('child_process', () => ({
     execSync: jest.fn(),
 }));
-
+jest.mock('electron-is-dev', () => false);
 jest.mock('electron', () => {
     class NotificationMock {
         callbackMap: Map<string, () => void>;
@@ -50,7 +50,7 @@ jest.mock('electron', () => {
 
         on = (event: string, callback: () => void) => {
             this.callbackMap.set(event, callback);
-        }
+        };
 
         show = jest.fn().mockImplementation(() => {
             this.callbackMap.get('show')?.();
@@ -69,6 +69,10 @@ jest.mock('electron', () => {
             dock: {
                 bounce: jest.fn(),
             },
+        },
+        ipcMain: {
+            on: jest.fn(),
+            off: jest.fn(),
         },
         Notification: NotificationMock,
         shell: {
@@ -92,6 +96,7 @@ jest.mock('../views/viewManager', () => ({
                 name: 'server_name',
                 url: new URL('http://someurl.com'),
             },
+            shouldNotify: true,
         },
     }),
     showById: jest.fn(),
@@ -101,7 +106,9 @@ jest.mock('../windows/mainWindow', () => ({
     show: jest.fn(),
     sendToRenderer: jest.fn(),
 }));
-
+jest.mock('main/developerMode', () => ({
+    switchOff: (_: string, onStart: () => void) => onStart(),
+}));
 jest.mock('main/i18nManager', () => ({
     localizeMessage: jest.fn(),
 }));
@@ -121,7 +128,7 @@ describe('main/notifications', () => {
             PermissionsManager.doPermissionRequest.mockReturnValue(Promise.resolve(true));
             Notification.isSupported.mockImplementation(() => true);
             getFocusAssist.mockReturnValue({value: 0, name: ''});
-            getDarwinDoNotDisturb.mockReturnValue(false);
+            getDarwinDoNotDisturb.mockReturnValue(Promise.resolve(false));
             Config.notifications = {
                 flashWindow: 0,
                 bounceIcon: false,
@@ -132,6 +139,7 @@ describe('main/notifications', () => {
 
         afterEach(() => {
             jest.resetAllMocks();
+            mentions.length = 0;
             Config.notifications = {
                 flashWindow: 0,
                 bounceIcon: false,
@@ -144,14 +152,14 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
-            expect(MainWindow.show).not.toBeCalled();
+            expect(mentions.length).toBe(0);
         });
 
         it('should do nothing when alarms only is enabled on windows', async () => {
@@ -164,14 +172,14 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
-            expect(MainWindow.show).not.toBeCalled();
+            expect(mentions.length).toBe(0);
 
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -184,18 +192,46 @@ describe('main/notifications', () => {
                 value: 'darwin',
             });
 
-            getDarwinDoNotDisturb.mockReturnValue(true);
+            getDarwinDoNotDisturb.mockReturnValue(Promise.resolve(true));
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
-            expect(MainWindow.show).not.toBeCalled();
+            expect(mentions.length).toBe(0);
+
+            Object.defineProperty(process, 'platform', {
+                value: originalPlatform,
+            });
+        });
+
+        it('should still show notification when dnd permission on mac is not authorized', async () => {
+            const originalPlatform = process.platform;
+            Object.defineProperty(process, 'platform', {
+                value: 'darwin',
+            });
+
+            getDarwinDoNotDisturb.mockImplementation(() => {
+                throw new Error('Unauthorized');
+            });
+            await NotificationManager.displayMention(
+                'test',
+                'test body',
+                'channel_id',
+                'team_id',
+                'http://server-1.com/team_id/channel_id',
+                false,
+                {id: 1} as WebContents,
+                '',
+            );
+            expect(mentions.length).toBe(1);
+            const mention = mentions[0];
+            expect(mention.value.show).toHaveBeenCalled();
 
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -207,26 +243,26 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
-            expect(MainWindow.show).not.toBeCalled();
+            expect(mentions.length).toBe(0);
         });
 
         it('should play notification sound when custom sound is provided', async () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: 'test_sound'},
+                'test_sound',
             );
             expect(MainWindow.sendToRenderer).toHaveBeenCalledWith(PLAY_SOUND, 'test_sound');
         });
@@ -240,12 +276,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
 
             // convert to any to access private field
@@ -257,12 +293,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'test',
                 'test body 2',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1} as WebContents,
-                {soundName: ''},
+                '',
             );
 
             expect(mentionsPerChannel.delete).toHaveBeenCalled();
@@ -273,19 +309,30 @@ describe('main/notifications', () => {
             });
         });
 
-        it('should switch view when clicking on notification', async () => {
+        it('should switch view when clicking on notification, but after the navigation has happened', async () => {
+            let listener: (event: IpcMainEvent, ...args: any[]) => void;
+            ipcMain.on.mockImplementation((channel: string, cb: (event: IpcMainEvent, ...args: any[]) => void): IpcMain => {
+                listener = cb;
+                return ipcMain;
+            });
             await NotificationManager.displayMention(
                 'click_test',
                 'mention_click_body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1, send: jest.fn()} as unknown as WebContents,
-                {soundName: ''},
+                '',
             );
             const mention = mentions.find((m) => m.body === 'mention_click_body');
             mention?.value.click();
+            expect(MainWindow.show).not.toHaveBeenCalled();
+            expect(ViewManager.showById).not.toHaveBeenCalledWith('server_id');
+
+            // @ts-expect-error "Set by the click handler"
+            listener?.({} as unknown as IpcMainEvent);
+
             expect(MainWindow.show).toHaveBeenCalled();
             expect(ViewManager.showById).toHaveBeenCalledWith('server_id');
         });
@@ -298,12 +345,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'click_test',
                 'mention_click_body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1, send: jest.fn()} as unknown as WebContents,
-                {soundName: ''},
+                '',
             );
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -324,12 +371,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'click_test',
                 'mention_click_body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1, send: jest.fn()} as unknown as WebContents,
-                {soundName: ''},
+                '',
             );
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -345,12 +392,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'click_test',
                 'mention_click_body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1, send: jest.fn()} as unknown as WebContents,
-                {soundName: ''},
+                '',
             );
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -371,12 +418,12 @@ describe('main/notifications', () => {
             await NotificationManager.displayMention(
                 'click_test',
                 'mention_click_body',
-                {id: 'channel_id'},
+                'channel_id',
                 'team_id',
                 'http://server-1.com/team_id/channel_id',
                 false,
                 {id: 1, send: jest.fn()} as unknown as WebContents,
-                {soundName: ''},
+                '',
             );
             Object.defineProperty(process, 'platform', {
                 value: originalPlatform,
@@ -389,13 +436,13 @@ describe('main/notifications', () => {
         beforeEach(() => {
             Notification.isSupported.mockImplementation(() => true);
             getFocusAssist.mockReturnValue({value: 0, name: ''});
-            getDarwinDoNotDisturb.mockReturnValue(false);
+            getDarwinDoNotDisturb.mockReturnValue(Promise.resolve(false));
         });
 
-        it('should open file when clicked', () => {
-            getDarwinDoNotDisturb.mockReturnValue(false);
+        it('should open file when clicked', async () => {
+            getDarwinDoNotDisturb.mockReturnValue(Promise.resolve(false));
             localizeMessage.mockReturnValue('test_filename');
-            NotificationManager.displayDownloadCompleted(
+            await NotificationManager.displayDownloadCompleted(
                 'test_filename',
                 '/path/to/file',
                 'server_name',

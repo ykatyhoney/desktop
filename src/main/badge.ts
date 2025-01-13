@@ -2,12 +2,12 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {BrowserWindow, app, nativeImage} from 'electron';
+import type {BrowserWindow} from 'electron';
+import {app, nativeImage} from 'electron';
 
 import AppState from 'common/appState';
 import {UPDATE_APPSTATE_TOTALS} from 'common/communication';
 import {Logger} from 'common/log';
-
 import {localizeMessage} from 'main/i18nManager';
 
 import MainWindow from './windows/mainWindow';
@@ -85,7 +85,7 @@ export function showBadgeWindows(sessionExpired: boolean, mentionCount: number, 
         text = '•';
         description = localizeMessage('main.badge.unreadChannels', 'You have unread channels');
     } else if (sessionExpired) {
-        text = '•';
+        text = '!';
         description = localizeMessage('main.badge.sessionExpired', 'Session Expired: Please sign in to continue receiving notifications.');
     }
     setOverlayIcon(text, description, mentionCount > 99);
@@ -98,7 +98,7 @@ export function showBadgeOSX(sessionExpired: boolean, mentionCount: number, show
     } else if (showUnreadBadge && showUnreadBadgeSetting) {
         badge = '•';
     } else if (sessionExpired) {
-        badge = '•';
+        badge = '!';
     }
     app.dock.setBadge(badge);
 }

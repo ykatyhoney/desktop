@@ -1,10 +1,8 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {IpcMainEvent, IpcMainInvokeEvent, ipcMain} from 'electron';
-
-import {UniqueServer, Server} from 'types/config';
-import {URLValidationResult} from 'types/server';
+import type {IpcMainEvent, IpcMainInvokeEvent} from 'electron';
+import {ipcMain} from 'electron';
 
 import {
     CLOSE_VIEW,
@@ -22,18 +20,22 @@ import {
     UPDATE_TAB_ORDER,
     VALIDATE_SERVER_URL,
 } from 'common/communication';
-import {Logger} from 'common/log';
-import ServerManager from 'common/servers/serverManager';
-import {MattermostServer} from 'common/servers/MattermostServer';
-import {isValidURI, isValidURL, parseURL} from 'common/utils/url';
-import {URLValidationStatus} from 'common/utils/constants';
 import Config from 'common/config';
-
-import ViewManager from 'main/views/viewManager';
-import ModalManager from 'main/views/modalManager';
-import MainWindow from 'main/windows/mainWindow';
-import {getLocalPreload, getLocalURLString} from 'main/utils';
+import {Logger} from 'common/log';
+import {MattermostServer} from 'common/servers/MattermostServer';
+import ServerManager from 'common/servers/serverManager';
+import {URLValidationStatus} from 'common/utils/constants';
+import {isValidURI, isValidURL, parseURL} from 'common/utils/url';
+import PermissionsManager from 'main/permissionsManager';
 import {ServerInfo} from 'main/server/serverInfo';
+import {getLocalPreload} from 'main/utils';
+import ModalManager from 'main/views/modalManager';
+import ViewManager from 'main/views/viewManager';
+import MainWindow from 'main/windows/mainWindow';
+
+import type {Server} from 'types/config';
+import type {Permissions, UniqueServerWithPermissions} from 'types/permissions';
+import type {URLValidationResult} from 'types/server';
 
 const log = new Logger('App', 'ServerViewState');
 
@@ -42,7 +44,7 @@ export class ServerViewState {
 
     constructor() {
         ipcMain.on(SWITCH_SERVER, (event, serverId) => this.switchServer(serverId));
-        ipcMain.on(SHOW_NEW_SERVER_MODAL, this.showNewServerModal);
+        ipcMain.on(SHOW_NEW_SERVER_MODAL, this.handleShowNewServerModal);
         ipcMain.on(SHOW_EDIT_SERVER_MODAL, this.showEditServerModal);
         ipcMain.on(SHOW_REMOVE_SERVER_MODAL, this.showRemoveServerModal);
         ipcMain.handle(VALIDATE_SERVER_URL, this.handleServerURLValidation);
@@ -65,10 +67,10 @@ export class ServerViewState {
                 this.currentServerId = orderedServers[0].id;
             }
         }
-    }
+    };
 
     getCurrentServer = () => {
-        log.debug('getCurrentServer');
+        log.silly('getCurrentServer');
 
         if (!this.currentServerId) {
             throw new Error('No server set as current');
@@ -78,7 +80,7 @@ export class ServerViewState {
             throw new Error('Current server does not exist');
         }
         return server;
-    }
+    };
 
     switchServer = (serverId: string, waitForViewToExist = false) => {
         ServerManager.getServerLog(serverId, 'WindowManager').debug('switchServer');
@@ -102,7 +104,7 @@ export class ServerViewState {
             ViewManager.showById(nextView.id);
         }
         ipcMain.emit(UPDATE_SHORTCUT_MENU);
-    }
+    };
 
     selectNextView = () => {
         this.selectView((order) => order + 1);
@@ -115,31 +117,38 @@ export class ServerViewState {
     updateCurrentView = (serverId: string, viewId: string) => {
         this.currentServerId = serverId;
         ServerManager.updateLastActive(viewId);
-    }
+    };
 
     /**
      * Server Modals
      */
 
-    showNewServerModal = () => {
-        log.debug('showNewServerModal');
+    showNewServerModal = (prefillURL?: string) => {
+        log.debug('showNewServerModal', {prefillURL});
 
         const mainWindow = MainWindow.get();
         if (!mainWindow) {
             return;
         }
 
-        const modalPromise = ModalManager.addModal<null, Server>(
+        const modalPromise = ModalManager.addModal<{prefillURL?: string}, Server>(
             'newServer',
-            getLocalURLString('newServer.html'),
-            getLocalPreload('desktopAPI.js'),
-            null,
+            'mattermost-desktop://renderer/newServer.html',
+            getLocalPreload('internalAPI.js'),
+            {prefillURL},
             mainWindow,
             !ServerManager.hasServers(),
         );
 
         modalPromise.then((data) => {
-            const newServer = ServerManager.addServer(data);
+            let initialLoadURL;
+            if (prefillURL) {
+                const parsedServerURL = parseURL(data.url);
+                if (parsedServerURL) {
+                    initialLoadURL = parseURL(`${parsedServerURL.origin}${prefillURL.substring(prefillURL.indexOf('/'))}`);
+                }
+            }
+            const newServer = ServerManager.addServer(data, initialLoadURL);
             this.switchServer(newServer.id, true);
         }).catch((e) => {
             // e is undefined for user cancellation
@@ -148,6 +157,8 @@ export class ServerViewState {
             }
         });
     };
+
+    private handleShowNewServerModal = () => this.showNewServerModal();
 
     private showEditServerModal = (e: IpcMainEvent, id: string) => {
         log.debug('showEditServerModal', id);
@@ -161,14 +172,19 @@ export class ServerViewState {
             return;
         }
 
-        const modalPromise = ModalManager.addModal<UniqueServer, Server>(
+        const modalPromise = ModalManager.addModal<UniqueServerWithPermissions, {server: Server; permissions: Permissions}>(
             'editServer',
-            getLocalURLString('editServer.html'),
-            getLocalPreload('desktopAPI.js'),
-            server.toUniqueServer(),
+            'mattermost-desktop://renderer/editServer.html',
+            getLocalPreload('internalAPI.js'),
+            {server: server.toUniqueServer(), permissions: PermissionsManager.getForServer(server) ?? {}},
             mainWindow);
 
-        modalPromise.then((data) => ServerManager.editServer(id, data)).catch((e) => {
+        modalPromise.then((data) => {
+            if (!server.isPredefined) {
+                ServerManager.editServer(id, data.server);
+            }
+            PermissionsManager.setForServer(server, data.permissions);
+        }).catch((e) => {
             // e is undefined for user cancellation
             if (e) {
                 log.error(`there was an error in the edit server modal: ${e}`);
@@ -190,8 +206,8 @@ export class ServerViewState {
 
         const modalPromise = ModalManager.addModal<string, boolean>(
             'removeServer',
-            getLocalURLString('removeServer.html'),
-            getLocalPreload('desktopAPI.js'),
+            'mattermost-desktop://renderer/removeServer.html',
+            getLocalPreload('internalAPI.js'),
             server.name,
             mainWindow,
         );
@@ -203,11 +219,11 @@ export class ServerViewState {
                     this.currentServerId = remainingServers[0].id;
                 }
 
+                ServerManager.removeServer(server.id);
+
                 if (!remainingServers.length) {
                     delete this.currentServerId;
                 }
-
-                ServerManager.removeServer(server.id);
             }
         }).catch((e) => {
             // e is undefined for user cancellation
@@ -231,11 +247,11 @@ export class ServerViewState {
 
         let httpUrl = url;
         if (!isValidURL(url)) {
-            // If it already includes the protocol, tell them it's invalid
-            if (isValidURI(url)) {
-                httpUrl = url.replace(/^(.+):/, 'https:');
-            } else {
-                // Otherwise add HTTPS for them
+            // If it already includes the protocol, force it to HTTPS
+            if (isValidURI(url) && !url.toLowerCase().startsWith('http')) {
+                httpUrl = url.replace(/^((.+):\/\/)?/, 'https://');
+            } else if (!'https://'.startsWith(url.toLowerCase()) && !'http://'.startsWith(url.toLowerCase())) {
+                // Check if they're starting to type `http(s)`, otherwise add HTTPS for them
                 httpUrl = `https://${url}`;
             }
         }
@@ -260,23 +276,33 @@ export class ServerViewState {
 
         // Try and get remote info from the most secure URL, otherwise use the insecure one
         let remoteURL = secureURL;
+        const insecureURL = parseURL(secureURL.toString().replace(/^https:/, 'http:'));
         let remoteInfo = await this.testRemoteServer(secureURL);
-        if (!remoteInfo) {
-            if (secureURL.toString() !== parsedURL.toString()) {
-                remoteURL = parsedURL;
-                remoteInfo = await this.testRemoteServer(parsedURL);
+        if (!remoteInfo && insecureURL) {
+            // Try to fall back to HTTP
+            remoteInfo = await this.testRemoteServer(insecureURL);
+            if (remoteInfo) {
+                remoteURL = insecureURL;
             }
         }
 
         // If we can't get the remote info, warn the user that this might not be the right URL
         // If the original URL was invalid, don't replace that as they probably have a typo somewhere
+        // Also strip the trailing slash if it's there so that the user can keep typing
         if (!remoteInfo) {
-            return {status: URLValidationStatus.NotMattermost, validatedURL: parsedURL.toString()};
+            // If the URL provided has a path, try to validate the server with parts of the path removed, until we reach the root and then return a failure
+            if (parsedURL.pathname !== '/') {
+                return this.handleServerURLValidation(e, parsedURL.toString().substring(0, parsedURL.toString().lastIndexOf('/')), currentId);
+            }
+
+            return {status: URLValidationStatus.NotMattermost, validatedURL: parsedURL.toString().replace(/\/$/, '')};
         }
+
+        const remoteServerName = remoteInfo.siteName === 'Mattermost' ? remoteURL.host.split('.')[0] : remoteInfo.siteName;
 
         // If we were only able to connect via HTTP, warn the user that the connection is not secure
         if (remoteURL.protocol === 'http:') {
-            return {status: URLValidationStatus.Insecure, serverVersion: remoteInfo.serverVersion, validatedURL: remoteURL.toString()};
+            return {status: URLValidationStatus.Insecure, serverVersion: remoteInfo.serverVersion, serverName: remoteServerName, validatedURL: remoteURL.toString()};
         }
 
         // If the URL doesn't match the Site URL, set the URL to the correct one
@@ -292,15 +318,15 @@ export class ServerViewState {
                 // If we can't reach the remote Site URL, there's probably a configuration issue
                 const remoteSiteURLInfo = await this.testRemoteServer(parsedSiteURL);
                 if (!remoteSiteURLInfo) {
-                    return {status: URLValidationStatus.URLNotMatched, serverVersion: remoteInfo.serverVersion, serverName: remoteInfo.siteName, validatedURL: remoteURL.toString()};
+                    return {status: URLValidationStatus.URLNotMatched, serverVersion: remoteInfo.serverVersion, serverName: remoteServerName, validatedURL: remoteURL.toString()};
                 }
             }
 
             // Otherwise fix it for them and return
-            return {status: URLValidationStatus.URLUpdated, serverVersion: remoteInfo.serverVersion, serverName: remoteInfo.siteName, validatedURL: remoteInfo.siteURL};
+            return {status: URLValidationStatus.URLUpdated, serverVersion: remoteInfo.serverVersion, serverName: remoteServerName, validatedURL: remoteInfo.siteURL};
         }
 
-        return {status: URLValidationStatus.OK, serverVersion: remoteInfo.serverVersion, serverName: remoteInfo.siteName, validatedURL: remoteInfo.siteURL};
+        return {status: URLValidationStatus.OK, serverVersion: remoteInfo.serverVersion, serverName: remoteServerName, validatedURL: remoteURL.toString()};
     };
 
     private handleCloseView = (event: IpcMainEvent, viewId: string) => {

@@ -1,26 +1,10 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {BrowserWindow, desktopCapturer, ipcMain, IpcMainEvent, Rectangle, systemPreferences, Event} from 'electron';
-
-import {
-    CallsErrorMessage,
-    CallsEventHandler,
-    CallsJoinCallMessage,
-    CallsJoinedCallMessage,
-    CallsJoinRequestMessage,
-    CallsLinkClickMessage,
-    CallsWidgetResizeMessage,
-    CallsWidgetShareScreenMessage,
-    CallsWidgetWindowConfig,
-} from 'types/calls';
+import type {IpcMainEvent, Rectangle, Event, IpcMainInvokeEvent} from 'electron';
+import {BrowserWindow, desktopCapturer, ipcMain, systemPreferences} from 'electron';
 
 import ServerViewState from 'app/serverViewState';
-
-import {Logger} from 'common/log';
-import {CALLS_PLUGIN_ID, MINIMUM_CALLS_WIDGET_HEIGHT, MINIMUM_CALLS_WIDGET_WIDTH} from 'common/utils/constants';
-import Utils from 'common/utils/util';
-import {getFormattedPathName, isCallsPopOutURL, parseURL} from 'common/utils/url';
 import {
     BROWSER_HISTORY_PUSH,
     CALLS_ERROR,
@@ -30,30 +14,44 @@ import {
     CALLS_LEAVE_CALL,
     CALLS_LINK_CLICK,
     CALLS_POPOUT_FOCUS,
-    CALLS_WIDGET_CHANNEL_LINK_CLICK,
     CALLS_WIDGET_RESIZE,
     CALLS_WIDGET_SHARE_SCREEN,
+    CALLS_WIDGET_OPEN_THREAD,
+    CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL,
+    CALLS_WIDGET_OPEN_USER_SETTINGS,
     DESKTOP_SOURCES_MODAL_REQUEST,
-    DESKTOP_SOURCES_RESULT,
-    DISPATCH_GET_DESKTOP_SOURCES,
+    GET_DESKTOP_SOURCES,
+    UPDATE_SHORTCUT_MENU,
 } from 'common/communication';
-
-import {MattermostBrowserView} from 'main/views/MattermostBrowserView';
+import {Logger} from 'common/log';
+import {CALLS_PLUGIN_ID, MINIMUM_CALLS_WIDGET_HEIGHT, MINIMUM_CALLS_WIDGET_WIDTH} from 'common/utils/constants';
+import {getFormattedPathName, isCallsPopOutURL, parseURL} from 'common/utils/url';
+import Utils from 'common/utils/util';
+import performanceMonitor from 'main/performanceMonitor';
+import PermissionsManager from 'main/permissionsManager';
 import {
     composeUserAgent,
     getLocalPreload,
     openScreensharePermissionsSettingsMacOS,
     resetScreensharePermissionsMacOS,
 } from 'main/utils';
+import type {MattermostWebContentsView} from 'main/views/MattermostWebContentsView';
+import ViewManager from 'main/views/viewManager';
 import webContentsEventManager from 'main/views/webContentEvents';
 import MainWindow from 'main/windows/mainWindow';
-import ViewManager from 'main/views/viewManager';
+
+import type {
+    CallsJoinCallMessage,
+    CallsWidgetWindowConfig,
+} from 'types/calls';
+
+import ContextMenu from '../contextMenu';
 
 const log = new Logger('CallsWidgetWindow');
 
 export class CallsWidgetWindow {
     private win?: BrowserWindow;
-    private mainView?: MattermostBrowserView;
+    private mainView?: MattermostWebContentsView;
     private options?: CallsWidgetWindowConfig;
     private missingScreensharePermissions?: boolean;
 
@@ -68,16 +66,19 @@ export class CallsWidgetWindow {
     constructor() {
         ipcMain.on(CALLS_WIDGET_RESIZE, this.handleResize);
         ipcMain.on(CALLS_WIDGET_SHARE_SCREEN, this.handleShareScreen);
-        ipcMain.on(CALLS_JOINED_CALL, this.handleJoinedCall);
         ipcMain.on(CALLS_POPOUT_FOCUS, this.handlePopOutFocus);
-        ipcMain.on(DISPATCH_GET_DESKTOP_SOURCES, this.genCallsEventHandler(this.handleGetDesktopSources));
-        ipcMain.on(DESKTOP_SOURCES_MODAL_REQUEST, this.genCallsEventHandler(this.handleDesktopSourcesModalRequest));
-        ipcMain.on(CALLS_JOIN_CALL, this.genCallsEventHandler(this.handleCreateCallsWidgetWindow));
-        ipcMain.on(CALLS_LEAVE_CALL, this.genCallsEventHandler(this.handleCallsLeave));
-        ipcMain.on(CALLS_WIDGET_CHANNEL_LINK_CLICK, this.genCallsEventHandler(this.handleCallsWidgetChannelLinkClick));
-        ipcMain.on(CALLS_ERROR, this.genCallsEventHandler(this.handleCallsError));
-        ipcMain.on(CALLS_LINK_CLICK, this.genCallsEventHandler(this.handleCallsLinkClick));
-        ipcMain.on(CALLS_JOIN_REQUEST, this.genCallsEventHandler(this.handleCallsJoinRequest));
+        ipcMain.handle(GET_DESKTOP_SOURCES, this.handleGetDesktopSources);
+        ipcMain.handle(CALLS_JOIN_CALL, this.handleCreateCallsWidgetWindow);
+        ipcMain.on(CALLS_LEAVE_CALL, this.handleCallsLeave);
+
+        // forwards to the main app
+        ipcMain.on(DESKTOP_SOURCES_MODAL_REQUEST, this.forwardToMainApp(DESKTOP_SOURCES_MODAL_REQUEST));
+        ipcMain.on(CALLS_ERROR, this.forwardToMainApp(CALLS_ERROR));
+        ipcMain.on(CALLS_LINK_CLICK, this.handleCallsLinkClick);
+        ipcMain.on(CALLS_JOIN_REQUEST, this.forwardToMainApp(CALLS_JOIN_REQUEST));
+        ipcMain.on(CALLS_WIDGET_OPEN_THREAD, this.handleCallsOpenThread);
+        ipcMain.on(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL, this.handleCallsOpenStopRecordingModal);
+        ipcMain.on(CALLS_WIDGET_OPEN_USER_SETTINGS, this.forwardToMainApp(CALLS_WIDGET_OPEN_USER_SETTINGS));
     }
 
     /**
@@ -92,17 +93,25 @@ export class CallsWidgetWindow {
         return this.mainView?.view.server.id;
     }
 
+    public isOpen() {
+        return Boolean(this.win && !this.win.isDestroyed());
+    }
+
     /**
      * Helper functions
      */
 
+    public openDevTools = () => {
+        this.win?.webContents.openDevTools({mode: 'detach'});
+    };
+
     getViewURL = () => {
         return this.mainView?.view.server.url;
-    }
+    };
 
     isCallsWidget = (webContentsId: number) => {
         return webContentsId === this.win?.webContents.id || webContentsId === this.popOut?.webContents.id;
-    }
+    };
 
     private getWidgetURL = () => {
         if (!this.mainView) {
@@ -124,9 +133,9 @@ export class CallsWidgetWindow {
         }
 
         return u.toString();
-    }
+    };
 
-    private init = (view: MattermostBrowserView, options: CallsWidgetWindowConfig) => {
+    private init = (view: MattermostWebContentsView, options: CallsWidgetWindowConfig) => {
         this.win = new BrowserWindow({
             width: MINIMUM_CALLS_WIDGET_WIDTH,
             height: MINIMUM_CALLS_WIDGET_HEIGHT,
@@ -140,7 +149,7 @@ export class CallsWidgetWindow {
             hasShadow: false,
             backgroundColor: '#00ffffff',
             webPreferences: {
-                preload: getLocalPreload('callsWidget.js'),
+                preload: getLocalPreload('externalAPI.js'),
             },
         });
         this.mainView = view;
@@ -161,12 +170,13 @@ export class CallsWidgetWindow {
         if (!widgetURL) {
             return;
         }
+        performanceMonitor.registerView('CallsWidgetWindow', this.win.webContents);
         this.win?.loadURL(widgetURL, {
             userAgent: composeUserAgent(),
         }).catch((reason) => {
             log.error(`failed to load: ${reason}`);
         });
-    }
+    };
 
     private close = async () => {
         log.debug('close');
@@ -183,9 +193,10 @@ export class CallsWidgetWindow {
                 return;
             }
             this.win?.on('closed', resolve);
+            performanceMonitor.unregisterView(this.win.webContents.id);
             this.win?.close();
         });
-    }
+    };
 
     private setBounds(bounds: Rectangle) {
         if (!this.win) {
@@ -203,37 +214,16 @@ export class CallsWidgetWindow {
         this.boundsErr = Utils.boundsDiff(bounds, this.win.getBounds());
     }
 
-    private isAllowedEvent = (event: IpcMainEvent) => {
-        // Allow events when a call isn't in progress
-        if (!(this.win && this.mainView)) {
-            return true;
-        }
-
-        // Only allow events coming from either the widget window or the
-        // original Mattermost view that initiated it.
-        return event.sender.id === this.win?.webContents.id ||
-            event.sender.id === this.mainView?.webContentsId;
-    }
-
-    private genCallsEventHandler = (handler: CallsEventHandler) => {
-        return (event: IpcMainEvent, viewId: string, msg?: any) => {
-            if (!this.isAllowedEvent(event)) {
-                log.warn('genCallsEventHandler', 'Disallowed calls event');
-                return;
-            }
-            handler(viewId, msg);
-        };
-    }
-
     /**
      * BrowserWindow/WebContents handlers
      */
 
     private onClosed = () => {
+        ipcMain.emit(UPDATE_SHORTCUT_MENU);
         delete this.win;
         delete this.mainView;
         delete this.options;
-    }
+    };
 
     private onNavigate = (ev: Event, url: string) => {
         if (url === this.getWidgetURL()) {
@@ -241,7 +231,24 @@ export class CallsWidgetWindow {
         }
         log.warn(`prevented widget window from navigating to: ${url}`);
         ev.preventDefault();
-    }
+    };
+
+    private setWidgetWindowStacking = ({onTop}: {onTop: boolean}) => {
+        log.debug('setWidgetWindowStacking', onTop);
+
+        if (!this.win) {
+            return;
+        }
+
+        if (onTop) {
+            this.win.setVisibleOnAllWorkspaces(true, {visibleOnFullScreen: true, skipTransformProcessType: true});
+            this.win.setAlwaysOnTop(true, 'screen-saver');
+            this.win.focus();
+        } else {
+            this.win.setAlwaysOnTop(false);
+            this.win.setVisibleOnAllWorkspaces(false);
+        }
+    };
 
     private onShow = () => {
         log.debug('onShow');
@@ -250,9 +257,7 @@ export class CallsWidgetWindow {
             return;
         }
 
-        this.win.focus();
-        this.win.setVisibleOnAllWorkspaces(true, {visibleOnFullScreen: true, skipTransformProcessType: true});
-        this.win.setAlwaysOnTop(true, 'screen-saver');
+        this.setWidgetWindowStacking({onTop: true});
 
         const bounds = this.win.getBounds();
         const mainBounds = mainWindow.getBounds();
@@ -265,11 +270,13 @@ export class CallsWidgetWindow {
         this.win.setMenuBarVisibility(false);
 
         if (process.env.MM_DEBUG_CALLS_WIDGET) {
-            this.win.webContents.openDevTools({mode: 'detach'});
+            this.openDevTools();
         }
 
+        ipcMain.emit(UPDATE_SHORTCUT_MENU);
+
         this.setBounds(initialBounds);
-    }
+    };
 
     private onPopOutOpen = ({url}: { url: string }) => {
         if (!(this.mainView && this.options)) {
@@ -291,10 +298,12 @@ export class CallsWidgetWindow {
 
         log.warn(`onPopOutOpen: prevented window open to ${url}`);
         return {action: 'deny' as const};
-    }
+    };
 
     private onPopOutCreate = (win: BrowserWindow) => {
         this.popOut = win;
+
+        this.setWidgetWindowStacking({onTop: false});
 
         // Let the webContentsEventManager handle links that try to open a new window.
         webContentsEventManager.addWebContentsEventListeners(this.popOut.webContents);
@@ -306,8 +315,13 @@ export class CallsWidgetWindow {
             event.preventDefault();
         });
 
+        const contextMenu = new ContextMenu({}, this.popOut);
+        contextMenu.reload();
+
         this.popOut.on('closed', () => {
             delete this.popOut;
+            contextMenu.dispose();
+            this.setWidgetWindowStacking({onTop: true});
         });
 
         // Set the userAgent so that the widget's popout is considered a desktop window in the webapp code.
@@ -327,21 +341,21 @@ export class CallsWidgetWindow {
                 log.error('did-frame-finish-load, failed to reload with correct userAgent', e);
             }
         });
-    }
+    };
 
     /************************
      * IPC HANDLERS
      ************************/
 
-    private handleResize = (ev: IpcMainEvent, _: string, msg: CallsWidgetResizeMessage) => {
-        log.debug('onResize', msg);
+    private handleResize = (ev: IpcMainEvent, width: number, height: number) => {
+        log.debug('handleResize', width, height);
 
         if (!this.win) {
             return;
         }
 
-        if (!this.isAllowedEvent(ev)) {
-            log.warn('onResize', 'Disallowed calls event');
+        if (!this.isCallsWidget(ev.sender.id)) {
+            log.debug('handleResize', 'Disallowed calls event');
             return;
         }
 
@@ -349,35 +363,24 @@ export class CallsWidgetWindow {
         const currBounds = this.win.getBounds();
         const newBounds = {
             x: currBounds.x,
-            y: currBounds.y - (Math.ceil(msg.height * zoomFactor) - currBounds.height),
-            width: Math.ceil(msg.width * zoomFactor),
-            height: Math.ceil(msg.height * zoomFactor),
+            y: currBounds.y - (Math.ceil(height * zoomFactor) - currBounds.height),
+            width: Math.ceil(width * zoomFactor),
+            height: Math.ceil(height * zoomFactor),
         };
 
         this.setBounds(newBounds);
-    }
+    };
 
-    private handleShareScreen = (ev: IpcMainEvent, _: string, message: CallsWidgetShareScreenMessage) => {
-        log.debug('handleShareScreen');
+    private handleShareScreen = (ev: IpcMainEvent, sourceID: string, withAudio: boolean) => {
+        log.debug('handleShareScreen', {sourceID, withAudio});
 
-        if (!this.isAllowedEvent(ev)) {
-            log.warn('Disallowed calls event');
+        if (this.mainView?.webContentsId !== ev.sender.id) {
+            log.debug('handleShareScreen', 'blocked on wrong webContentsId');
             return;
         }
 
-        this.win?.webContents.send(CALLS_WIDGET_SHARE_SCREEN, message);
-    }
-
-    private handleJoinedCall = (ev: IpcMainEvent, _: string, message: CallsJoinedCallMessage) => {
-        log.debug('handleJoinedCall');
-
-        if (!this.isAllowedEvent(ev)) {
-            log.warn('handleJoinedCall', 'Disallowed calls event');
-            return;
-        }
-
-        this.mainView?.sendToRenderer(CALLS_JOINED_CALL, message);
-    }
+        this.win?.webContents.send(CALLS_WIDGET_SHARE_SCREEN, sourceID, withAudio);
+    };
 
     private handlePopOutFocus = () => {
         if (!this.popOut) {
@@ -387,15 +390,20 @@ export class CallsWidgetWindow {
             this.popOut.restore();
         }
         this.popOut.focus();
-    }
+    };
 
-    private handleGetDesktopSources = async (viewId: string, opts: Electron.SourcesOptions) => {
+    private handleGetDesktopSources = async (event: IpcMainInvokeEvent, opts: Electron.SourcesOptions) => {
         log.debug('handleGetDesktopSources', opts);
 
-        const view = ViewManager.getView(viewId);
+        // For Calls we make an extra check to ensure the event is coming from the expected window (main view).
+        // Otherwise we want to allow for other plugins to ask for screen sharing sources.
+        if (this.mainView && event.sender.id !== this.mainView.webContentsId) {
+            throw new Error('handleGetDesktopSources: blocked on wrong webContentsId');
+        }
+
+        const view = ViewManager.getViewByWebContentsId(event.sender.id);
         if (!view) {
-            log.error('handleGetDesktopSources: view not found');
-            return Promise.resolve();
+            throw new Error('handleGetDesktopSources: view not found');
         }
 
         if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') === 'denied') {
@@ -415,7 +423,11 @@ export class CallsWidgetWindow {
             }
         }
 
-        const screenPermissionsErrMsg = {err: 'screen-permissions'};
+        if (!await PermissionsManager.doPermissionRequest(view.webContentsId, 'screenShare', {requestingUrl: view.view.server.url.toString(), isMainFrame: false})) {
+            throw new Error('permissions denied');
+        }
+
+        const screenPermissionsErrArgs = ['screen-permissions', this.callID];
 
         return desktopCapturer.getSources(opts).then((sources) => {
             let hasScreenPermissions = true;
@@ -429,10 +441,7 @@ export class CallsWidgetWindow {
             }
 
             if (!hasScreenPermissions || !sources.length) {
-                log.info('missing screen permissions');
-                view.sendToRenderer(CALLS_ERROR, screenPermissionsErrMsg);
-                this.win?.webContents.send(CALLS_ERROR, screenPermissionsErrMsg);
-                return;
+                throw new Error('handleGetDesktopSources: permissions denied');
             }
 
             const message = sources.map((source) => {
@@ -443,34 +452,56 @@ export class CallsWidgetWindow {
                 };
             });
 
-            if (message.length > 0) {
-                view.sendToRenderer(DESKTOP_SOURCES_RESULT, message);
-            }
+            return message;
         }).catch((err) => {
-            log.error('desktopCapturer.getSources failed', err);
+            // Only send calls error if this window has been initialized (i.e. we are in a call).
+            // The rest of the logic is shared so that other plugins can request screen sources.
+            if (this.callID) {
+                view.sendToRenderer(CALLS_ERROR, ...screenPermissionsErrArgs);
+                this.win?.webContents.send(CALLS_ERROR, ...screenPermissionsErrArgs);
+            }
 
-            view.sendToRenderer(CALLS_ERROR, screenPermissionsErrMsg);
-            this.win?.webContents.send(CALLS_ERROR, screenPermissionsErrMsg);
+            throw new Error(`handleGetDesktopSources: desktopCapturer.getSources failed: ${err}`);
         });
-    }
+    };
 
-    private handleCreateCallsWidgetWindow = async (viewId: string, msg: CallsJoinCallMessage) => {
+    private handleCreateCallsWidgetWindow = async (event: IpcMainInvokeEvent, msg: CallsJoinCallMessage) => {
         log.debug('createCallsWidgetWindow');
 
         // trying to join again the call we are already in should not be allowed.
         if (this.options?.callID === msg.callID) {
-            return;
+            return Promise.resolve();
         }
 
         // to switch from one call to another we need to wait for the existing
         // window to be fully closed.
         await this.close();
 
-        const currentView = ViewManager.getView(viewId);
+        const currentView = ViewManager.getViewByWebContentsId(event.sender.id);
         if (!currentView) {
             log.error('unable to create calls widget window: currentView is missing');
-            return;
+            return Promise.resolve();
         }
+
+        const promise = new Promise((resolve) => {
+            const connected = (ev: IpcMainEvent, incomingCallId: string, incomingSessionId: string) => {
+                log.debug('onJoinedCall', incomingCallId);
+
+                if (!this.isCallsWidget(ev.sender.id)) {
+                    log.debug('onJoinedCall', 'blocked on wrong webContentsId');
+                    return;
+                }
+
+                if (msg.callID !== incomingCallId) {
+                    log.debug('onJoinedCall', 'blocked on wrong callId');
+                    return;
+                }
+
+                ipcMain.off(CALLS_JOINED_CALL, connected);
+                resolve({callID: msg.callID, sessionID: incomingSessionId});
+            };
+            ipcMain.on(CALLS_JOINED_CALL, connected);
+        });
 
         this.init(currentView, {
             callID: msg.callID,
@@ -478,72 +509,74 @@ export class CallsWidgetWindow {
             rootID: msg.rootID,
             channelURL: msg.channelURL,
         });
-    }
 
-    private handleDesktopSourcesModalRequest = () => {
-        log.debug('handleDesktopSourcesModalRequest');
-
-        if (!this.serverID) {
-            return;
-        }
-
-        ServerViewState.switchServer(this.serverID);
-        MainWindow.get()?.focus();
-        this.mainView?.sendToRenderer(DESKTOP_SOURCES_MODAL_REQUEST);
-    }
+        return promise;
+    };
 
     private handleCallsLeave = () => {
         log.debug('handleCallsLeave');
 
         this.close();
-    }
+    };
 
-    private handleCallsWidgetChannelLinkClick = () => {
-        log.debug('handleCallsWidgetChannelLinkClick');
-
-        if (!this.serverID) {
+    private focusChannelView() {
+        if (!this.serverID || !this.mainView) {
             return;
         }
 
         ServerViewState.switchServer(this.serverID);
         MainWindow.get()?.focus();
-        this.mainView?.sendToRenderer(BROWSER_HISTORY_PUSH, this.options?.channelURL);
+        ViewManager.showById(this.mainView.id);
     }
 
-    private handleCallsError = (_: string, msg: CallsErrorMessage) => {
-        log.debug('handleCallsError', msg);
+    private forwardToMainApp = (channel: string) => {
+        return (event: IpcMainEvent, ...args: any) => {
+            log.debug('forwardToMainApp', channel, ...args);
+
+            if (!this.isCallsWidget(event.sender.id)) {
+                return;
+            }
+
+            if (!this.serverID) {
+                return;
+            }
+
+            this.focusChannelView();
+            this.mainView?.sendToRenderer(channel, ...args);
+        };
+    };
+
+    private handleCallsOpenThread = (event: IpcMainEvent, threadID: string) => {
+        this.forwardToMainApp(CALLS_WIDGET_OPEN_THREAD)(event, threadID);
+    };
+
+    private handleCallsOpenStopRecordingModal = (event: IpcMainEvent, channelID: string) => {
+        this.forwardToMainApp(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL)(event, channelID);
+    };
+
+    private handleCallsLinkClick = (event: IpcMainEvent, url: string) => {
+        log.debug('handleCallsLinkClick', url);
+
+        if (!this.isCallsWidget(event.sender.id)) {
+            return;
+        }
 
         if (!this.serverID) {
             return;
         }
 
-        ServerViewState.switchServer(this.serverID);
-        MainWindow.get()?.focus();
-        this.mainView?.sendToRenderer(CALLS_ERROR, msg);
-    }
-
-    private handleCallsLinkClick = (_: string, msg: CallsLinkClickMessage) => {
-        log.debug('handleCallsLinkClick with linkURL', msg.link);
-
-        if (!this.serverID) {
+        const parsedURL = parseURL(url);
+        if (parsedURL) {
+            ViewManager.handleDeepLink(parsedURL);
             return;
         }
 
-        ServerViewState.switchServer(this.serverID);
-        MainWindow.get()?.focus();
-        this.mainView?.sendToRenderer(BROWSER_HISTORY_PUSH, msg.link);
-    }
+        // If parsing above fails it means it's a relative path (e.g.
+        // pointing to a channel).
 
-    private handleCallsJoinRequest = (_: string, msg: CallsJoinRequestMessage) => {
-        log.debug('handleCallsJoinRequest with callID', msg.callID);
-        if (!this.serverID) {
-            return;
-        }
-
-        ServerViewState.switchServer(this.serverID);
-        MainWindow.get()?.focus();
-        this.mainView?.sendToRenderer(CALLS_JOIN_REQUEST, msg);
-    }
+        this.focusChannelView();
+        this.mainView?.sendToRenderer(BROWSER_HISTORY_PUSH, url);
+    };
 }
 
 const callsWidgetWindow = new CallsWidgetWindow();

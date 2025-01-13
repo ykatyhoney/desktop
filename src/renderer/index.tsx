@@ -8,7 +8,7 @@ import 'renderer/css/index.css';
 import React from 'react';
 import ReactDOM from 'react-dom';
 
-import {CombinedConfig} from 'types/config';
+import type {CombinedConfig} from 'types/config';
 
 import MainPage from './components/MainPage';
 import IntlProvider from './intl_provider';
@@ -43,7 +43,7 @@ class Root extends React.PureComponent<Record<string, never>, State> {
     setInitialConfig = async () => {
         const config = await this.requestConfig(true);
         this.setState({config});
-    }
+    };
 
     reloadConfig = async () => {
         const config = await this.requestConfig();
@@ -56,7 +56,7 @@ class Root extends React.PureComponent<Record<string, never>, State> {
             const configRequest = await window.desktop.getConfiguration() as CombinedConfig;
             return configRequest;
         } catch (err: any) {
-            console.log(`there was an error with the config: ${err}`);
+            console.error(`there was an error with the config: ${err}`);
             if (exitOnError) {
                 window.desktop.quit(`unable to load configuration: ${err}`, err.stack);
             }
@@ -68,7 +68,7 @@ class Root extends React.PureComponent<Record<string, never>, State> {
         if (window.process.platform !== 'darwin') {
             window.desktop.openAppMenu();
         }
-    }
+    };
 
     render() {
         const {config} = this.state;
@@ -81,7 +81,6 @@ class Root extends React.PureComponent<Record<string, never>, State> {
                     openMenu={this.openMenu}
                     darkMode={config.darkMode}
                     appName={config.appName}
-                    useNativeWindow={config.useNativeWindow}
                 />
             </IntlProvider>
         );

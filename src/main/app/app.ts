@@ -1,11 +1,11 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {app, BrowserWindow, Event, dialog, WebContents, Certificate, Details} from 'electron';
+import type {BrowserWindow, Event, WebContents, Certificate, Details} from 'electron';
+import {app, dialog} from 'electron';
 
 import {Logger} from 'common/log';
 import {parseURL} from 'common/utils/url';
-
 import updateManager from 'main/autoUpdater';
 import CertificateStore from 'main/certificateStore';
 import {localizeMessage} from 'main/i18nManager';
@@ -29,10 +29,11 @@ export function handleAppSecondInstance(event: Event, argv: string[]) {
 
     // Protocol handler for win32
     // argv: An array of the second instance’s (command line / deep linked) arguments
-    MainWindow.show();
     const deeplinkingURL = getDeeplinkingURL(argv);
     if (deeplinkingURL) {
         openDeepLink(deeplinkingURL);
+    } else if (MainWindow.get()) {
+        MainWindow.show();
     }
 }
 
@@ -50,7 +51,11 @@ export function handleAppBrowserWindowCreated(event: Event, newWindow: BrowserWi
     log.debug('handleAppBrowserWindowCreated');
 
     // Screen cannot be required before app is ready
-    resizeScreen(newWindow);
+    if (app.isReady()) {
+        resizeScreen(newWindow);
+    } else {
+        newWindow.once('restore', () => resizeScreen(newWindow));
+    }
 }
 
 export function handleAppWillFinishLaunching() {

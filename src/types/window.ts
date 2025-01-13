@@ -1,14 +1,14 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {ipcRenderer, Rectangle} from 'electron/renderer';
+import type {ipcRenderer, Rectangle} from 'electron/renderer';
 
-import {Language} from '../../i18n/i18n';
+import type {CombinedConfig, LocalConfiguration, UniqueView, UniqueServer} from './config';
+import type {DownloadedItem, DownloadedItems, DownloadsMenuOpenEventPayload} from './downloads';
+import type {URLValidationResult} from './server';
+import type {SaveQueueItem} from './settings';
 
-import {CombinedConfig, LocalConfiguration, UniqueView, UniqueServer} from './config';
-import {DownloadedItem, DownloadedItems, DownloadsMenuOpenEventPayload} from './downloads';
-import {SaveQueueItem} from './settings';
-import {URLValidationResult} from './server';
+import type {Language} from '../../i18n/i18n';
 
 declare global {
     interface Window {
@@ -27,9 +27,6 @@ declare global {
         timers: {
             setImmediate: typeof setImmediate;
         };
-        mas: {
-            getThumbnailLocation: (location: string) => Promise<string>;
-        };
         desktop: {
             quit: (reason: string, stack: string) => void;
             openAppMenu: () => void;
@@ -37,10 +34,7 @@ declare global {
             openServersDropdown: () => void;
             switchTab: (viewId: string) => void;
             closeView: (viewId: string) => void;
-            closeWindow: () => void;
-            minimizeWindow: () => void;
-            maximizeWindow: () => void;
-            restoreWindow: () => void;
+            exitFullScreen: () => void;
             doubleClickOnWindow: (windowName?: string) => void;
             focusCurrentView: () => void;
             reloadCurrentView: () => void;
@@ -50,6 +44,8 @@ declare global {
             goBack: () => void;
             checkForUpdates: () => void;
             updateConfiguration: (saveQueueItems: SaveQueueItem[]) => void;
+            getNonce: () => Promise<string | undefined>;
+            isDeveloperModeEnabled: () => Promise<boolean>;
 
             updateServerOrder: (serverOrder: string[]) => Promise<void>;
             updateTabOrder: (serverId: string, viewOrder: string[]) => Promise<void>;
@@ -83,7 +79,6 @@ declare global {
             onPlaySound: (listener: (soundName: string) => void) => void;
             onModalOpen: (listener: () => void) => void;
             onModalClose: (listener: () => void) => void;
-            onToggleBackButton: (listener: (showExtraBar: boolean) => void) => void;
             onUpdateMentions: (listener: (view: string, mentions: number, unreads: boolean, isExpired: boolean) => void) => void;
             onCloseServersDropdown: (listener: () => void) => void;
             onOpenServersDropdown: (listener: () => void) => void;
@@ -96,6 +91,10 @@ declare global {
             onFocusThreeDotMenu: (listener: () => void) => void;
 
             updateURLViewWidth: (width?: number) => void;
+            openNotificationPreferences: () => void;
+            openWindowsCameraPreferences: () => void;
+            openWindowsMicrophonePreferences: () => void;
+            getMediaAccessStatus: (mediaType: 'microphone' | 'camera' | 'screen') => Promise<'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'>;
 
             modals: {
                 cancelModal: <T>(data?: T) => void;
@@ -152,6 +151,12 @@ declare global {
                     unreads?: Map<string, boolean>,
                 ) => void) => void;
             };
+        };
+    }
+
+    interface Navigator {
+        windowControlsOverlay?: {
+            getTitlebarAreaRect: () => DOMRect;
         };
     }
 }

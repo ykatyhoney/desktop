@@ -5,12 +5,22 @@
 
 import {getDoNotDisturb as getDarwinDoNotDisturb} from 'macos-notification-state';
 
-import {localizeMessage} from 'main/i18nManager';
-import ServerManager from 'common/servers/serverManager';
-
 import ServerViewState from 'app/serverViewState';
+import ServerManager from 'common/servers/serverManager';
+import {localizeMessage} from 'main/i18nManager';
+import CallsWidgetWindow from 'main/windows/callsWidgetWindow';
 
 import {createTemplate} from './app';
+
+jest.mock('electron-extension-installer', () => {
+    return () => ({
+        REACT_DEVELOPER_TOOLS: 'react-developer-tools',
+    });
+});
+
+jest.mock('electron-context-menu', () => {
+    return () => jest.fn();
+});
 
 jest.mock('electron', () => {
     class NotificationMock {
@@ -38,6 +48,9 @@ jest.mock('electron', () => {
             removeListener: jest.fn(),
         },
         Notification: NotificationMock,
+        nativeImage: {
+            createFromPath: jest.fn(),
+        },
     };
 });
 jest.mock('fs', () => ({
@@ -55,22 +68,33 @@ jest.mock('common/servers/serverManager', () => ({
     hasServers: jest.fn(),
     getOrderedServers: jest.fn(),
     getOrderedTabsForServer: jest.fn(),
+    getRemoteInfo: jest.fn(),
 }));
 jest.mock('app/serverViewState', () => ({
     switchServer: jest.fn(),
     getCurrentServer: jest.fn(),
 }));
+jest.mock('main/app/utils', () => ({}));
 jest.mock('main/diagnostics', () => ({}));
 jest.mock('main/downloadsManager', () => ({
     hasDownloads: jest.fn(),
 }));
 jest.mock('main/views/viewManager', () => ({}));
 jest.mock('main/windows/mainWindow', () => ({
-    sendToRenderer: jest.fn(),
+    get: jest.fn(),
 }));
-jest.mock('main/windows/settingsWindow', () => ({}));
 jest.mock('common/views/View', () => ({
     getViewDisplayName: (name) => name,
+}));
+jest.mock('main/AutoLauncher', () => ({
+    enable: jest.fn(),
+    disable: jest.fn(),
+}));
+jest.mock('main/windows/callsWidgetWindow', () => ({
+    isOpen: jest.fn(),
+}));
+jest.mock('main/views/modalManager', () => ({
+    addModal: jest.fn(),
 }));
 
 describe('main/menus/app', () => {
@@ -280,6 +304,7 @@ describe('main/menus/app', () => {
             }
             return id;
         });
+        ServerManager.hasServers.mockReturnValue(true);
         ServerViewState.getCurrentServer.mockImplementation(() => ({id: servers[0].id}));
 
         const modifiedViews = [...Array(15).keys()].map((key) => ({
@@ -304,5 +329,46 @@ describe('main/menus/app', () => {
         const menu = createTemplate(config);
         const helpSubmenu = menu.find((subMenu) => subMenu.id === 'help')?.submenu;
         expect(helpSubmenu).toContainObject({id: 'diagnostics'});
+    });
+
+    it('should show developer tools submenu', () => {
+        const menu = createTemplate(config);
+
+        const appMenu = menu.find((item) => item.label === 'main.menus.app.view');
+
+        expect(appMenu).not.toBe(undefined);
+
+        const devToolsSubMenu = appMenu.submenu.find((item) => item.label === 'main.menus.app.view.devToolsSubMenu');
+
+        expect(devToolsSubMenu.submenu.length).toBe(2);
+        expect(devToolsSubMenu.submenu[0].label).toBe('main.menus.app.view.devToolsAppWrapper');
+        expect(devToolsSubMenu.submenu[1].label).toBe('main.menus.app.view.devToolsCurrentServer');
+    });
+
+    it('should not show menu item if widget window is not open', () => {
+        const menu = createTemplate(config);
+
+        const appMenu = menu.find((item) => item.label === 'main.menus.app.view');
+        expect(appMenu).not.toBe(undefined);
+
+        const devToolsSubMenu = appMenu.submenu.find((item) => item.label === 'main.menus.app.view.devToolsSubMenu');
+        expect(devToolsSubMenu).not.toBe(undefined);
+
+        const menuItem = devToolsSubMenu.submenu.find((item) => item.label === 'main.menus.app.view.devToolsCurrentCallWidget');
+        expect(menuItem).toBe(undefined);
+    });
+
+    it('should show menu item if widget window is open', () => {
+        CallsWidgetWindow.isOpen = jest.fn(() => true);
+        const menu = createTemplate(config);
+
+        const appMenu = menu.find((item) => item.label === 'main.menus.app.view');
+        expect(appMenu).not.toBe(undefined);
+
+        const devToolsSubMenu = appMenu.submenu.find((item) => item.label === 'main.menus.app.view.devToolsSubMenu');
+        expect(devToolsSubMenu).not.toBe(undefined);
+
+        const menuItem = devToolsSubMenu.submenu.find((item) => item.label === 'main.menus.app.view.devToolsCurrentCallWidget');
+        expect(menuItem).not.toBe(undefined);
     });
 });

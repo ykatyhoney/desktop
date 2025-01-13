@@ -1,9 +1,8 @@
 // Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {EventEmitter} from 'events';
-
 import {app, powerMonitor} from 'electron';
+import {EventEmitter} from 'events';
 
 import {Logger} from 'common/log';
 
@@ -83,6 +82,7 @@ export class UserActivityMonitor extends EventEmitter {
    */
     stopMonitoring() {
         clearInterval(this.systemIdleTimeIntervalID);
+        this.systemIdleTimeIntervalID = -1;
     }
 
     /**
